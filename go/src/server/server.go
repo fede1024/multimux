@@ -153,6 +153,9 @@ func Start(c *exec.Cmd) (newPty *os.File, err error) {
 
 func main() {
 
+	//test_avro()
+	//os.Exit(1)
+
 	//c := exec.Command("grep", "--color=auto", "bar")
 	c := exec.Command("/bin/bash")
 	//c := exec.Command("cat", "/home/fede/test")
@@ -196,9 +199,13 @@ func main() {
 			fmt.Println("Error accepting: ", err.Error())
 			os.Exit(1)
 		}
+
+		buf := make([]byte, 1024)
+		n, err := conn.Read(buf)
+		test_avro2(buf[:n])
 		// Handle connections in a new goroutine.
-		go handleRequest(conn, f)
-		go printFileTo(f, conn)
+		//go handleRequest(conn, f)
+		//go printFileTo(f, conn)
 	}
 
 	c.Wait()

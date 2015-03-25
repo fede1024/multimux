@@ -9,10 +9,14 @@
            [com.pty4j.util PtyUtil]
            [java.nio.charset Charset]
            [java.nio CharBuffer ByteBuffer]
-           [java.io InputStreamReader]
+           [java.io File InputStreamReader ByteArrayOutputStream FileOutputStream]
            [java.net Socket]
            [java.util Arrays]
            [org.apache.log4j BasicConfigurator Level Logger]
+           [org.apache.avro.generic GenericData$Record GenericDatumWriter GenericDatumReader]
+           [org.apache.avro Schema$Parser]
+           [org.apache.avro.io BinaryEncoder EncoderFactory]
+           [org.apache.avro.file DataFileWriter DataFileReader]
            ))
 
 (def byte-array?
@@ -138,3 +142,33 @@
   (swing)
   ;(println (create-process))
   (println "Hello, World!"))
+
+(def schema (.parse (Schema$Parser.) (File. "user.avsc")))
+
+(def user
+  (let [user (GenericData$Record. schema)]
+    (.put user "ciao" "john")
+    (.put user "favorite_number" (int 23))
+    (.put user "favorite_color" "blue")
+    user))
+
+(let [writer (DataFileWriter. (GenericDatumWriter. schema))
+      file (File. "users.avro")]
+  (.create writer schema file)
+  (.append writer user)
+  (.put user "ciao" "carletto")
+  (.append writer user)
+  (.close writer))
+
+(let [file (File. "users.avro")
+      reader (DataFileReader. file (GenericDatumReader. schema))]
+  (for [user reader]
+    [(.get user "ciao") (.get user "favorite_number")]))
+
+(let [out (ByteArrayOutputStream.)
+      writer (GenericDatumWriter. schema)
+      encoder (.binaryEncoder (EncoderFactory/get) out nil)
+      file (FileOutputStream. "users.avro")]
+  (.write writer user encoder)
+  (.flush encoder)
+  (.write file (.toByteArray out)))
