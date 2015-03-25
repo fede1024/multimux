@@ -1,0 +1,13 @@
+{"namespace": "multimux",
+ "type": "record",
+ "name": "Message",
+ "fields": [
+     {"name": "messageType",
+      "type": {"type":"enum",
+               "name":"messageTypes",
+               "symbols":[ "input", "output" ]
+              }
+     },
+     {"name": "data", "type": ["bytes", "null"]}
+ ]
+}

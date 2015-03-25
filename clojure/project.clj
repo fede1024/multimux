@@ -4,6 +4,7 @@
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :dependencies [[org.clojure/clojure "1.6.0"]
+                 [org.clojure/core.async "0.1.346.0-17112a-alpha"]
                  [org.apache.avro/avro "1.7.7"]]
   :resource-paths  ["lib/jediterm-pty-2.0.jar" "lib/guava-14.0.1.jar" "lib/pty4j-0.3.jar"
                     "lib/log4j-1.2.14.jar" "lib/jna.jar" "lib/jna-platform.jar"

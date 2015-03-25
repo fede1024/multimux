@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"github.com/kr/pty"
+	"github.com/linkedin/goavro"
 	"io"
 	"log"
 	"net"
@@ -151,11 +152,19 @@ func Start(c *exec.Cmd) (newPty *os.File, err error) {
 	return newPty, err
 }
 
+func MessageChannelListener(msgChan chan *goavro.Record) {
+	for msg := range msgChan {
+		fmt.Println(">>>", msg)
+		messageType, err := msg.Get("messageType")
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		fmt.Println(">>>", messageType)
+	}
+}
+
 func main() {
-
-	//test_avro()
-	//os.Exit(1)
-
 	//c := exec.Command("grep", "--color=auto", "bar")
 	c := exec.Command("/bin/bash")
 	//c := exec.Command("cat", "/home/fede/test")
@@ -164,24 +173,16 @@ func main() {
 		panic(err)
 	}
 
-	go func() {
-		f.Write([]byte("ls\n"))
-	}()
+	//go func() {
+	//	f.Write([]byte("ls\n"))
+	//}()
 
-	//go printFile(f)
-	//go readToFile(f)
-
-	fmt.Println("LOL")
-
-	//os.Exit(1)
-
-	//exec_bash()
-	//outConn, err := net.Dial("tcp", "127.0.0.1:3334")
-	//if err != nil {
-	//	fmt.Println(err)
-	//	os.Exit(1)
-	//}
-	//go printFileTo(f, outConn)
+	msgChan := make(chan *goavro.Record)
+	codec, err := MessageCodec()
+	if err != nil {
+		fmt.Println("Can't create message codec")
+		return
+	}
 
 	// Listen for incoming connections.
 	l, err := net.Listen(CONN_TYPE, CONN_HOST+":"+CONN_PORT)
@@ -191,21 +192,19 @@ func main() {
 	}
 	// Close the listener when the application closes.
 	defer l.Close()
+
+	go MessageChannelListener(msgChan)
+
 	fmt.Println("Listening on " + CONN_HOST + ":" + CONN_PORT)
 	for {
-		// Listen for an incoming connection.
 		conn, err := l.Accept()
 		if err != nil {
 			fmt.Println("Error accepting: ", err.Error())
 			os.Exit(1)
 		}
 
-		buf := make([]byte, 1024)
-		n, err := conn.Read(buf)
-		test_avro2(buf[:n])
-		// Handle connections in a new goroutine.
-		//go handleRequest(conn, f)
-		//go printFileTo(f, conn)
+		go DecodeAvroStream(codec, conn, msgChan)
+		go printFileTo(f, conn)
 	}
 
 	c.Wait()
@@ -236,8 +235,11 @@ func setSize(fd uintptr, rown, columns int) error {
 	return nil
 }
 
-// Handles incoming requests.
 func handleRequest(conn net.Conn, f io.WriteCloser) {
+}
+
+// Handles incoming requests.
+func handleChannel(conn net.Conn, f io.WriteCloser) {
 	// Make a buffer to hold incoming data.
 	buf := make([]byte, 1024)
 	// Read the incoming connection into the buffer.
