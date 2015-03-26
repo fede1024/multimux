@@ -100,7 +100,7 @@
         ;settings (DefaultSettingsProvider.)
         term (JediTermWidget. 75 28 settings)
         server {:host "localhost" :port 3333}
-        ;connector (tty-process-connector (create-process) (Charset/forName "UTF-8"))
+        ;connector (connectors/tty-process-connector (connectors/create-process) (Charset/forName "UTF-8"))
         ;connector (tty-socket-connector (create-connection {:host "localhost" :port 3333})
         ;                                (Charset/forName "UTF-8"))
         msgReadChan (chan)

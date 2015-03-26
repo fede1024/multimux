@@ -204,10 +204,6 @@ func ProcessSender(sendChan chan *goavro.Record, f io.Reader) {
 		}
 		record := makeOutputMessage(buf[:reqLen])
 
-		//decoded, _ := record.Get("data")
-		//fmt.Println("UI", len(decoded.([]byte)))
-		//os.Stdout.Write(decoded.([]byte))
-
 		sendChan <- record
 	}
 }

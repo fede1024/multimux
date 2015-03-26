@@ -73,11 +73,11 @@
           (println "Resize to" (.width term-size) (.height term-size))
           (.setWinSize process (WinSize. (.width term-size) (.height term-size)
                                          (.width pixel-size) (.height pixel-size))))))
-    (read [buf offset length]
-      (println buf offset length)
-      (let [n (proxy-super read buf offset length)]
-        (println n)
-        n))
+    ;(read [buf offset length]
+    ;  (println buf offset length)
+    ;  (let [n (proxy-super read buf offset length)]
+    ;    (println n)
+    ;    n))
     (getName []
       "processTty")))
 
@@ -101,18 +101,15 @@
                  (.width pixel-size) (.height pixel-size)))
       (read [buf offset length]
         (let [n (.read @input-stream buf offset length)]
-          (println 'read buf offset length n)
           (if (= n -1)
-            (do
-              (reset! input-stream (message-to-stream readChan charset))
-              (let [n2 (.read @input-stream buf offset length)]
-                (println n2)
-                n2
-                ))
+            (let [stream (message-to-stream readChan charset)]
+              (reset! input-stream stream)
+              (.read stream buf offset length))
             n)))
       (write [buf]
-        (println 'write buf (count buf))
-        (>!! writeChan buf))
+        (if (byte-array? buf)
+          (>!! writeChan buf)
+          (>!! writeChan (.getBytes buf charset))))
       (getName [] "channelTty")
       (close [] nil)    ; TODO: fix
       (waitFor [] 1)))) ; TODO: protocol wait?
