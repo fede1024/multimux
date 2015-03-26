@@ -81,6 +81,7 @@
     (getName []
       "processTty")))
 
+;; from channel with byte[] to StringReader (to get a char[])
 (defn message-to-stream [channel charset]
   (StringReader. (String. (<!! channel) charset)))
 
@@ -99,18 +100,19 @@
         (println "Resize to" (.width term-size) (.height term-size)
                  (.width pixel-size) (.height pixel-size)))
       (read [buf offset length]
-        (println 'read buf offset length)
         (let [n (.read @input-stream buf offset length)]
+          (println 'read buf offset length n)
           (if (= n -1)
             (do
               (reset! input-stream (message-to-stream readChan charset))
-              (.read @input-stream buf offset length))
+              (let [n2 (.read @input-stream buf offset length)]
+                (println n2)
+                n2
+                ))
             n)))
       (write [buf]
         (println 'write buf (count buf))
         (>!! writeChan buf))
-      (getName []
-        "socketTty")
-      (close []
-        nil)  ; TODO: fix
+      (getName [] "channelTty")
+      (close [] nil)    ; TODO: fix
       (waitFor [] 1)))) ; TODO: protocol wait?

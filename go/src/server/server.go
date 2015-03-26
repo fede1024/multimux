@@ -15,6 +15,9 @@ import (
 	//	"strings"
 )
 
+var messageSchema goavro.RecordSetter
+var messageCodec goavro.Codec
+
 func printPipe(pipe io.ReadCloser) {
 	buf := make([]byte, 1024)
 	for {
@@ -152,15 +155,60 @@ func Start(c *exec.Cmd) (newPty *os.File, err error) {
 	return newPty, err
 }
 
-func MessageChannelListener(msgChan chan *goavro.Record) {
-	for msg := range msgChan {
-		fmt.Println(">>>", msg)
+func ProcessReceiver(receiveChan <-chan *goavro.Record, f io.Writer) {
+	for msg := range receiveChan {
 		messageType, err := msg.Get("messageType")
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
-		fmt.Println(">>>", messageType)
+		if messageType == "input" {
+			dataRecord, err := msg.Get("data")
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			data := dataRecord.([]byte)
+			nw, err := f.Write(data)
+			if err != nil {
+				log.Fatal(err)
+				break
+			}
+			if len(data) != nw {
+				panic("Fix here")
+			}
+		}
+	}
+}
+
+func makeOutputMessage(data []byte) *goavro.Record {
+	record, err := goavro.NewRecord(messageSchema)
+	if err != nil {
+		log.Fatal(err)
+		return nil
+	}
+	record.Set("messageType", "output")
+	record.Set("data", data)
+
+	return record
+}
+
+//func ProcessSender(sendChan chan<- *goavro.Record, f io.Reader) {
+func ProcessSender(sendChan chan *goavro.Record, f io.Reader) {
+	for {
+		buf := make([]byte, 1024)
+		reqLen, err := f.Read(buf)
+		if err != nil {
+			log.Fatal(err)
+			break
+		}
+		record := makeOutputMessage(buf[:reqLen])
+
+		//decoded, _ := record.Get("data")
+		//fmt.Println("UI", len(decoded.([]byte)))
+		//os.Stdout.Write(decoded.([]byte))
+
+		sendChan <- record
 	}
 }
 
@@ -177,8 +225,9 @@ func main() {
 	//	f.Write([]byte("ls\n"))
 	//}()
 
-	msgChan := make(chan *goavro.Record)
-	codec, err := MessageCodec()
+	receiveChan := make(chan *goavro.Record)
+	sendChan := make(chan *goavro.Record)
+	messageCodec, messageSchema, err = MessageCodec()
 	if err != nil {
 		fmt.Println("Can't create message codec")
 		return
@@ -193,7 +242,8 @@ func main() {
 	// Close the listener when the application closes.
 	defer l.Close()
 
-	go MessageChannelListener(msgChan)
+	go ProcessReceiver(receiveChan, f)
+	go ProcessSender(sendChan, f)
 
 	fmt.Println("Listening on " + CONN_HOST + ":" + CONN_PORT)
 	for {
@@ -203,8 +253,10 @@ func main() {
 			os.Exit(1)
 		}
 
-		go DecodeAvroStream(codec, conn, msgChan)
-		go printFileTo(f, conn)
+		go MessageStreamListener(messageCodec, conn, receiveChan)
+		go MessageStreamWriter(messageCodec, conn, sendChan)
+		//go printFileTo(f, conn)
+		//go ProcessListener(f, conn)
 	}
 
 	c.Wait()
@@ -233,9 +285,6 @@ func setSize(fd uintptr, rown, columns int) error {
 		return syscall.Errno(errno)
 	}
 	return nil
-}
-
-func handleRequest(conn net.Conn, f io.WriteCloser) {
 }
 
 // Handles incoming requests.
