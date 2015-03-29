@@ -81,8 +81,10 @@
     (getName []
       "processTty")))
 
-;; from channel with byte[] to StringReader (to get a char[])
-(defn message-to-stream [channel charset]
+(defn message-to-stream
+  "Read a message from a channel of byte arrays and return a string reader of it,
+  based on the specified charset."
+  [channel charset]
   (StringReader. (String. (<!! channel) charset)))
 
 (defn tty-channel-connector [readChan writeChan charset]
@@ -91,10 +93,8 @@
   (let [input-stream (atom (StringReader. ""))]
     (proxy [com.jediterm.terminal.TtyConnector] []
       (init [q]
-        (println 'init chan)
         (when chan true))
       (isConnected []
-        (println 'conn)
         (when chan true))
       (resize [term-size pixel-size]
         (println "Resize to" (.width term-size) (.height term-size)

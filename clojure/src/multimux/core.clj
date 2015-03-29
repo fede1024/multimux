@@ -1,6 +1,8 @@
 (ns multimux.core
   (:gen-class)
   (:require [multimux.connectors :as connectors]
+            [taoensso.timbre :as log]
+            [clojure.string :as str]
             [clojure.core.async :refer [>!! <!! chan alts!!] :as async])
   (:import [javax.swing JFrame JLabel JButton]
            [java.awt.event WindowListener]
@@ -18,16 +20,22 @@
            [org.apache.avro.io BinaryEncoder BinaryDecoder EncoderFactory DecoderFactory]
            [org.apache.avro.file DataFileWriter DataFileReader DataFileStream]))
 
+(defn configure-logger! []
+  (log/merge-config!
+    {:timestamp-pattern "yyyy-MMM-dd HH:mm:ss"
+     :fmt-output-fn (fn [{:keys [level throwable message timestamp hostname ns]}
+                         & [{:keys [nofonts?] :as appender-fmt-output-opts}]]
+                      ;; <timestamp> <LEVEL> [<ns>] - <message> <throwable>
+                      (format "%s %s [%s] - %s%s"
+                              timestamp (-> level name str/upper-case) ns (or message "")
+                              (or (log/stacktrace throwable "\n" (when nofonts? {})) "")))}))
+
 (defn create-connection [server]
   (try
     (Socket. (:host server) (:port server))
     (catch java.net.ConnectException e
+      (log/warn "Connection failure" e)
       nil)))
-
-; (defn to-bytes [chars]
-;   (let [cb (CharBuffer/wrap chars)
-;         bb (.encode (Charset/forName "UTF-8") cb) ]
-;     (Arrays/copyOfRange (.array bb) (.position bb) (.limit bb))))
 
 (def messageSchema (.parse (Schema$Parser.) (File. "message.avsc")))
 
@@ -61,20 +69,28 @@
   (when (not socket)
     (throw (Exception. "Socket is nil")))
   (async/thread
-    (let [in (.getInputStream socket)
-          reader (GenericDatumReader. messageSchema)
-          decoder (.directBinaryDecoder (DecoderFactory/get) in nil)]
-      (loop [msg (.read reader nil decoder)]
-        (>!! msgReadChan msg)
-        (recur (.read reader nil decoder)))))
+    (try
+      (let [in (.getInputStream socket)
+            reader (GenericDatumReader. messageSchema)
+            decoder (.directBinaryDecoder (DecoderFactory/get) in nil)]
+        (loop [msg (.read reader nil decoder)]
+          (>!! msgReadChan msg)
+          (recur (.read reader nil decoder))))
+      (catch java.io.EOFException e
+        (log/warn "Socket exception" e))))
   (async/thread
-    (let [out (.getOutputStream socket)
-          writer (GenericDatumWriter. messageSchema)
-          encoder (.binaryEncoder (EncoderFactory/get) out nil)]
-      (loop [msg (<!! msgWriteChan)]
-        (.write writer msg encoder)
-        (.flush encoder)
-        (recur (<!! msgWriteChan))))))
+    (try
+      (let [out (.getOutputStream socket)
+            writer (GenericDatumWriter. messageSchema)
+            encoder (.binaryEncoder (EncoderFactory/get) out nil)]
+        (loop [msg (<!! msgWriteChan)]
+          (.write writer msg encoder)
+          (.flush encoder)
+          (recur (<!! msgWriteChan))))
+      (catch java.io.EOFException e
+        (log/warn "Interrupted stream" e))
+      (catch java.net.SocketException e
+        (log/warn "Socket exception" e)))))
 
 (defn create-input-message [bytes]
   (let [message (GenericData$Record. messageSchema)]
@@ -91,9 +107,6 @@
           termWriteChan (>!! msgWriteChan (create-input-message data)))
         (recur (alts!! channels))))))
 
-(def tr (atom nil))
-(def tw (atom nil))
-
 (defn swing []
   (let [frame (JFrame. "Fund manager")
         settings (settings-provider)
@@ -109,12 +122,9 @@
         termWriteChan (chan)
         connector (connectors/tty-channel-connector termReadChan termWriteChan (Charset/forName "UTF-8"))
         session (.createTerminalSession term connector)]
-    (reset! tw termReadChan)
-    (reset! tr termWriteChan)
     (msg-connection (create-connection server) msgReadChan msgWriteChan)
     (message-handler msgReadChan msgWriteChan termReadChan termWriteChan)
     (.start session)
-    ;(.setModeEnabled (.getTerminal term) (TerminalMode/InsertMode) true)
     (.setModeEnabled (.getTerminal term) (TerminalMode/CursorBlinking) false)
     (doto frame
       (.add term)
@@ -124,7 +134,8 @@
           (windowOpened [evt])
           (windowActivated [evt])
           (windowDeactivated [evt])
-          (windowClosing [evt])))
+          (windowClosing [evt]
+            (log/info "GUI closed"))))
       (.setSize 1000 800)
       (.setVisible true))))
 
@@ -133,9 +144,9 @@
   [& args]
   (BasicConfigurator/configure)
   (.setLevel (Logger/getRootLogger) (Level/INFO))
+  (configure-logger!)
   (swing)
-  ;(println (create-process))
-  (println "Hello, World!"))
+  (log/info "GUI started"))
 
 
 (def message
