@@ -5,9 +5,10 @@
      {"name": "messageType",
       "type": {"type":"enum",
                "name":"messageTypes",
-               "symbols":[ "input", "output" ]
+               "symbols":[ "input", "output", "resize" ]
               }
      },
-     {"name": "data", "type": ["bytes", "null"]}
+     {"name": "data",
+      "type": ["InputOutput", "Resize", "null"] }
  ]
 }

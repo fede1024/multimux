@@ -1,13 +1,12 @@
 (ns multimux.connectors
-  (:gen-class)
   (:require [clojure.core.async :refer [>!! <!! chan] :as async])
   (:import [java.nio.charset Charset]
            [java.nio CharBuffer ByteBuffer]
            [java.io File InputStreamReader ByteArrayOutputStream StringReader FileOutputStream]
            [java.net Socket]
            [java.util Arrays]
-           [com.pty4j PtyProcess WinSize]
-           [com.pty4j.util PtyUtil]
+;;           [com.pty4j PtyProcess WinSize]
+;;           [com.pty4j.util PtyUtil]
            [org.apache.log4j BasicConfigurator Level Logger]
            [org.apache.avro.generic GenericData$Record GenericDatumWriter GenericDatumReader]
            [org.apache.avro Schema$Parser]
@@ -54,32 +53,32 @@
         (.close socket))
       (waitFor [] 1)))) ; TODO: protocol wait
 
-(defn create-process []
-  (let [command (into-array String ["/bin/bash"])
-        env (into-array String ["TERM=xterm-256color"])
-        ;env (java.util.HashMap. (System/getenv))
-        ]
-    ;(PtyProcess/exec command env "/" false)
-    (PtyProcess/exec command env)))
+;; (defn create-process []
+;;   (let [command (into-array String ["/bin/bash"])
+;;         env (into-array String ["TERM=xterm-256color"])
+;;         ;env (java.util.HashMap. (System/getenv))
+;;         ]
+;;     ;(PtyProcess/exec command env "/" false)
+;;     (PtyProcess/exec command env)))
 
-(defn tty-process-connector [process charset]
-  (proxy [com.jediterm.terminal.ProcessTtyConnector] [process charset]
-    (isConnected []
-      (.isRunning process))
-    (resizeImmediately []
-      (let [term-size (proxy-super getPendingTermSize)
-            pixel-size (proxy-super getPendingPixelSize)]
-        (when (and term-size pixel-size)
-          (println "Resize to" (.width term-size) (.height term-size))
-          (.setWinSize process (WinSize. (.width term-size) (.height term-size)
-                                         (.width pixel-size) (.height pixel-size))))))
-    ;(read [buf offset length]
-    ;  (println buf offset length)
-    ;  (let [n (proxy-super read buf offset length)]
-    ;    (println n)
-    ;    n))
-    (getName []
-      "processTty")))
+;; (defn tty-process-connector [process charset]
+;;   (proxy [com.jediterm.terminal.ProcessTtyConnector] [process charset]
+;;     (isConnected []
+;;       (.isRunning process))
+;;     (resizeImmediately []
+;;       (let [term-size (proxy-super getPendingTermSize)
+;;             pixel-size (proxy-super getPendingPixelSize)]
+;;         (when (and term-size pixel-size)
+;;           (println "Resize to" (.width term-size) (.height term-size))
+;;           (.setWinSize process (WinSize. (.width term-size) (.height term-size)
+;;                                          (.width pixel-size) (.height pixel-size))))))
+;;     ;(read [buf offset length]
+;;     ;  (println buf offset length)
+;;     ;  (let [n (proxy-super read buf offset length)]
+;;     ;    (println n)
+;;     ;    n))
+;;     (getName []
+;;       "processTty")))
 
 (defn message-to-stream
   "Read a message from a channel of byte arrays and return a string reader of it,
@@ -97,8 +96,8 @@
       (isConnected []
         (when chan true))
       (resize [term-size pixel-size]
-        (println "Resize to" (.width term-size) (.height term-size)
-                 (.width pixel-size) (.height pixel-size)))
+        (>!! writeChan [:resize [(.width term-size) (.height term-size)
+                                 (.width pixel-size) (.height pixel-size)]]))
       (read [buf offset length]
         (let [n (.read @input-stream buf offset length)]
           (if (= n -1)
@@ -108,8 +107,8 @@
             n)))
       (write [buf]
         (if (byte-array? buf)
-          (>!! writeChan buf)
-          (>!! writeChan (.getBytes buf charset))))
+          (>!! writeChan [:input buf])
+          (>!! writeChan [:input (.getBytes buf charset)])))
       (getName [] "channelTty")
       (close [] nil)    ; TODO: fix
       (waitFor [] 1)))) ; TODO: protocol wait?

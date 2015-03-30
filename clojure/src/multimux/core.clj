@@ -37,7 +37,11 @@
       (log/warn "Connection failure" e)
       nil)))
 
-(def messageSchema (.parse (Schema$Parser.) (File. "message.avsc")))
+(def parser (Schema$Parser.))
+
+(def inputOutputSchema (.parse parser (File. "../avro/InputOutput.avsc")))
+(def resizeSchema (.parse parser (File. "../avro/Resize.avsc")))
+(def messageSchema (.parse parser (File. "../avro/Message.avsc")))
 
 (defn settings-provider []
   (proxy [DefaultSettingsProvider] []
@@ -93,18 +97,41 @@
         (log/warn "Socket exception" e)))))
 
 (defn create-input-message [bytes]
-  (let [message (GenericData$Record. messageSchema)]
+  (let [message (GenericData$Record. messageSchema)
+        inputOutput (GenericData$Record. inputOutputSchema)]
+    (.put inputOutput "bytes" (ByteBuffer/wrap bytes))
     (.put message "messageType" "input")
-    (.put message "data" (ByteBuffer/wrap bytes))
+    (.put message "data" inputOutput)
     message))
+
+(defn create-resize-message [size]
+  (let [[rows cols width height] size
+        message (GenericData$Record. messageSchema)
+        resize (GenericData$Record. resizeSchema)]
+    (.put resize "rows" rows)
+    (.put resize "cols" cols)
+    (.put resize "xpixel" width)
+    (.put resize "ypixel" height)
+    (.put message "messageType" "resize")
+    (.put message "data" resize)
+    message))
+
+(defn handle-term-write [[type payload]]
+  (condp = type
+    :input (create-input-message payload)
+    :resize (create-resize-message payload)))
+
+(defn decode-term-data [data]
+  (let [inputOutput (.get data "data")]
+    (.array (.get inputOutput "bytes"))))
 
 (defn message-handler [msgReadChan msgWriteChan termReadChan termWriteChan]
   (async/thread
     (let [channels [msgReadChan termWriteChan]]
       (loop [[data chan] (alts!! channels)]
         (condp = chan
-          msgReadChan   (>!! termReadChan (.array (.get data "data")))
-          termWriteChan (>!! msgWriteChan (create-input-message data)))
+          msgReadChan   (>!! termReadChan (decode-term-data data))
+          termWriteChan (>!! msgWriteChan (handle-term-write data)))
         (recur (alts!! channels))))))
 
 (defn swing []
@@ -150,9 +177,11 @@
 
 
 (def message
-  (let [message (GenericData$Record. messageSchema)]
+  (let [message (GenericData$Record. messageSchema)
+        inputOutput (GenericData$Record. inputOutputSchema)]
+    (.put inputOutput "bytes" (ByteBuffer/wrap (.getBytes "date\n" (Charset/forName "UTF-8"))))
     (.put message "messageType" "input")
-    (.put message "data" (ByteBuffer/wrap (.getBytes "date\n" (Charset/forName "UTF-8"))))
+    (.put message "data" inputOutput)
     message))
 
 (let [out (ByteArrayOutputStream.)

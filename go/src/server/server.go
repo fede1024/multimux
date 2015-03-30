@@ -1,10 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
+	"github.com/fede1024/goavro"
 	"github.com/kr/pty"
-	"github.com/linkedin/goavro"
 	"io"
 	"log"
 	"net"
@@ -15,145 +14,18 @@ import (
 	//	"strings"
 )
 
+var inputOutputSchema goavro.RecordSetter
+var inputOutputCodec goavro.Codec
+var resizeSchema goavro.RecordSetter
+var resizeCodec goavro.Codec
 var messageSchema goavro.RecordSetter
 var messageCodec goavro.Codec
-
-func printPipe(pipe io.ReadCloser) {
-	buf := make([]byte, 1024)
-	for {
-		reqLen, err := pipe.Read(buf)
-		if err != nil {
-			log.Fatal(err)
-			break
-		}
-		s := string(buf[:reqLen])
-		fmt.Printf(s)
-	}
-}
-
-func readToPipe(pipe io.WriteCloser) {
-	reader := bufio.NewReader(os.Stdin)
-
-	for {
-		text, err := reader.ReadString('\n')
-		if err != nil {
-			log.Fatal(err)
-			break
-		}
-		io.WriteString(pipe, text)
-	}
-}
-
-func exec_bash() {
-	cmd := exec.Command("bash")
-
-	processOut, err := cmd.StdoutPipe()
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer processOut.Close()
-
-	processErr, err := cmd.StderrPipe()
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer processErr.Close()
-
-	processIn, err := cmd.StdinPipe()
-	if err != nil {
-		fmt.Println(err)
-	}
-	defer processIn.Close()
-
-	if err := cmd.Start(); err != nil {
-		log.Fatal(err)
-	}
-
-	go printPipe(processOut)
-	go printPipe(processErr)
-	go readToPipe(processIn)
-
-	cmd.Wait()
-
-	fmt.Printf("Done\n")
-}
 
 const (
 	CONN_HOST = "localhost"
 	CONN_PORT = "3333"
 	CONN_TYPE = "tcp"
 )
-
-func printFile(pipe io.ReadCloser) {
-	//buf := make([]byte, 1024)
-	for {
-		//reqLen, err := pipe.Read(buf)
-		_, err := io.Copy(os.Stdout, pipe)
-		if err != nil {
-			log.Fatal(err)
-			break
-		}
-		//s := string(buf[:reqLen])
-		//fmt.Printf(s)
-		// os.Stdout.Write(buf[:reqLen])
-	}
-}
-
-func printFileTo(pipe io.ReadCloser, out net.Conn) {
-	//buf := make([]byte, 1024)
-	for {
-		//reqLen, err := pipe.Read(buf)
-		_, err := io.Copy(out, pipe)
-		if err != nil {
-			log.Fatal(err)
-			break
-		}
-		//s := string(buf[:reqLen])
-		//fmt.Printf(s)
-		// os.Stdout.Write(buf[:reqLen])
-	}
-}
-
-func readToFile(pipe io.WriteCloser) {
-	reader := bufio.NewReader(os.Stdin)
-
-	for {
-		text, err := reader.ReadString('\n')
-		if err != nil {
-			log.Fatal(err)
-			break
-		}
-		//io.WriteString(pipe, text)
-		pipe.Write([]byte(text))
-	}
-}
-
-func Start(c *exec.Cmd) (newPty *os.File, err error) {
-	newPty, tty, err := pty.Open()
-	if err != nil {
-		return nil, err
-	}
-	defer tty.Close()
-	c.Stdout = tty
-	c.Stdin = tty
-	c.Stderr = tty
-	c.SysProcAttr = &syscall.SysProcAttr{Setctty: true, Setsid: true}
-	err = c.Start()
-	if err != nil {
-		newPty.Close()
-		return nil, err
-	}
-
-	fmt.Printf(newPty.Name() + "\n")
-	fmt.Printf(tty.Name() + "\n")
-	rows, cols, _ := pty.Getsize(tty)
-	fmt.Printf(">> ", rows, cols, "\n")
-	setSize(tty.Fd(), 20, 80)
-	rows, cols, _ = pty.Getsize(tty)
-	fmt.Printf(">> ", rows, cols, "\n")
-
-	return newPty, err
-}
 
 func ProcessReceiver(receiveChan <-chan *goavro.Record, f io.Writer) {
 	for msg := range receiveChan {
@@ -162,21 +34,29 @@ func ProcessReceiver(receiveChan <-chan *goavro.Record, f io.Writer) {
 			fmt.Println(err)
 			return
 		}
+		payload, err := msg.Get("data")
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		dataRecord := payload.(*goavro.Record)
 		if messageType == "input" {
-			dataRecord, err := msg.Get("data")
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-			data := dataRecord.([]byte)
-			nw, err := f.Write(data)
+			bytesData, err := dataRecord.Get("bytes")
+			bytes := bytesData.([]byte)
+			nw, err := f.Write(bytes)
 			if err != nil {
 				log.Fatal(err)
-				break
 			}
-			if len(data) != nw {
+			if len(bytes) != nw {
 				panic("Fix here")
 			}
+		} else if messageType == "resize" {
+			cols, _ := dataRecord.Get("cols")
+			rows, _ := dataRecord.Get("rows")
+			xpixel, _ := dataRecord.Get("xpixel")
+			ypixel, _ := dataRecord.Get("ypixel")
+
+			setSize(globalProcess.Fd(), cols.(int32), rows.(int32), xpixel.(int32), ypixel.(int32))
 		}
 	}
 }
@@ -185,10 +65,15 @@ func makeOutputMessage(data []byte) *goavro.Record {
 	record, err := goavro.NewRecord(messageSchema)
 	if err != nil {
 		log.Fatal(err)
-		return nil
 	}
+
+	inputOutput, err := goavro.NewRecord(inputOutputSchema)
+	if err != nil {
+		log.Fatal(err)
+	}
+	inputOutput.Set("bytes", data)
 	record.Set("messageType", "output")
-	record.Set("data", data)
+	record.Set("data", inputOutput)
 
 	return record
 }
@@ -200,7 +85,6 @@ func ProcessSender(sendChan chan *goavro.Record, f io.Reader) {
 		reqLen, err := f.Read(buf)
 		if err != nil {
 			log.Fatal(err)
-			break
 		}
 		record := makeOutputMessage(buf[:reqLen])
 
@@ -208,24 +92,28 @@ func ProcessSender(sendChan chan *goavro.Record, f io.Reader) {
 	}
 }
 
+var globalProcess *os.File
+
 func main() {
-	//c := exec.Command("grep", "--color=auto", "bar")
 	c := exec.Command("/bin/bash")
-	//c := exec.Command("cat", "/home/fede/test")
-	f, err := Start(c)
+	f, err := pty.Start(c)
 	if err != nil {
 		panic(err)
 	}
 
-	//go func() {
-	//	f.Write([]byte("ls\n"))
-	//}()
+	globalProcess = f
+
+	goavro.NewSymtab()
 
 	receiveChan := make(chan *goavro.Record)
 	sendChan := make(chan *goavro.Record)
-	messageCodec, messageSchema, err = MessageCodec()
+	st := goavro.NewSymtab()
+
+	inputOutputCodec, inputOutputSchema, err = LoadCodec(st, "../../../avro/InputOutput.avsc")
+	resizeCodec, resizeSchema, err = LoadCodec(st, "../../../avro/Resize.avsc")
+	messageCodec, messageSchema, err = LoadCodec(st, "../../../avro/Message.avsc")
 	if err != nil {
-		fmt.Println("Can't create message codec")
+		fmt.Println("Can't create message codec:", err)
 		return
 	}
 
@@ -251,8 +139,6 @@ func main() {
 
 		go MessageStreamListener(messageCodec, conn, receiveChan)
 		go MessageStreamWriter(messageCodec, conn, sendChan)
-		//go printFileTo(f, conn)
-		//go ProcessListener(f, conn)
 	}
 
 	c.Wait()
@@ -265,7 +151,7 @@ type winsize struct {
 	ws_ypixel uint16
 }
 
-func setSize(fd uintptr, rown, columns int) error {
+func setSize(fd uintptr, rown, columns, xpixel, ypixel int32) error {
 	var ws winsize
 
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCGWINSZ, uintptr(unsafe.Pointer(&ws)))
@@ -275,6 +161,8 @@ func setSize(fd uintptr, rown, columns int) error {
 
 	ws.ws_col = uint16(columns)
 	ws.ws_row = uint16(rown)
+	ws.ws_xpixel = uint16(xpixel)
+	ws.ws_ypixel = uint16(ypixel)
 
 	_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCSWINSZ, uintptr(unsafe.Pointer(&ws)))
 	if errno != 0 {
@@ -303,7 +191,6 @@ func handleChannel(conn net.Conn, f io.WriteCloser) {
 		}
 		if err != nil {
 			log.Fatal(err)
-			break
 		}
 	}
 	// Close the connection when you're done with it.
