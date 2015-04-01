@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"syscall"
 	"unsafe"
-	//	"strings"
 )
 
 var inputOutputSchema goavro.RecordSetter
@@ -27,38 +26,70 @@ const (
 	CONN_TYPE = "tcp"
 )
 
-func ProcessReceiver(receiveChan <-chan *goavro.Record, f io.Writer) {
+func inputMessagesWorker(receiveChan <-chan *goavro.Record, registry *processRegistry) {
 	for msg := range receiveChan {
+		fmt.Println("RCV", msg)
 		messageType, err := msg.Get("messageType")
 		if err != nil {
 			fmt.Println(err)
-			return
+			continue
 		}
 		payload, err := msg.Get("data")
 		if err != nil {
 			fmt.Println(err)
-			return
+			continue
 		}
 		dataRecord := payload.(*goavro.Record)
 		if messageType == "input" {
-			bytesData, err := dataRecord.Get("bytes")
-			bytes := bytesData.([]byte)
-			nw, err := f.Write(bytes)
-			if err != nil {
-				log.Fatal(err)
-			}
-			if len(bytes) != nw {
-				panic("Fix here")
-			}
+			bytesRaw, _ := dataRecord.Get("bytes")
+			registry.GetProcess(0).stdin <- bytesRaw.([]byte)
 		} else if messageType == "resize" {
 			cols, _ := dataRecord.Get("cols")
 			rows, _ := dataRecord.Get("rows")
 			xpixel, _ := dataRecord.Get("xpixel")
 			ypixel, _ := dataRecord.Get("ypixel")
 
-			setSize(globalProcess.Fd(), cols.(int32), rows.(int32), xpixel.(int32), ypixel.(int32))
+			setSize(registry.GetProcess(0).tty.Fd(), cols.(int32), rows.(int32), xpixel.(int32), ypixel.(int32))
 		}
 	}
+}
+
+func outputMessagesWorker(sendChan chan<- *goavro.Record, registry *processRegistry) {
+	fmt.Println(">>", registry.GetProcess(0).stdout)
+	for bytes := range registry.GetProcess(0).stdout {
+		fmt.Println("SND", bytes)
+		sendChan <- makeOutputMessage(bytes)
+	}
+}
+
+func (proc process) ProcessStdinWorker() {
+	for input := range proc.stdin {
+		fmt.Println("STDIN", input)
+		nw, err := proc.tty.Write(input)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if len(input) != nw {
+			panic("Fix here")
+		}
+	}
+	fmt.Println("STDIN END")
+}
+
+func (proc process) ProcessStdoutWorker() {
+	fmt.Println(">>", proc.stdout)
+	for {
+		buf := make([]byte, 1024)
+		reqLen, err := proc.tty.Read(buf)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		fmt.Println("STDOUT", buf[:reqLen])
+		proc.stdout <- buf[:reqLen]
+		fmt.Println("STDOUT DOPO")
+	}
+	fmt.Println("STDOUT END")
 }
 
 func makeOutputMessage(data []byte) *goavro.Record {
@@ -78,35 +109,60 @@ func makeOutputMessage(data []byte) *goavro.Record {
 	return record
 }
 
-//func ProcessSender(sendChan chan<- *goavro.Record, f io.Reader) {
-func ProcessSender(sendChan chan *goavro.Record, f io.Reader) {
-	for {
-		buf := make([]byte, 1024)
-		reqLen, err := f.Read(buf)
-		if err != nil {
-			log.Fatal(err)
-		}
-		record := makeOutputMessage(buf[:reqLen])
-
-		sendChan <- record
-	}
+type process struct {
+	path          string
+	id            int
+	tty           *os.File
+	command       *exec.Cmd
+	stdin, stdout chan []byte
 }
 
-var globalProcess *os.File
+type processRegistry struct {
+	newId     int
+	processes map[int]*process
+}
 
-func main() {
-	c := exec.Command("/bin/bash")
+func NewProcessRegistry() *processRegistry {
+	return &processRegistry{processes: make(map[int]*process)}
+}
+
+func (pr processRegistry) NewProcess(path string) (*process, error) {
+	c := exec.Command(path)
 	f, err := pty.Start(c)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
-	globalProcess = f
+	stdinChan := make(chan []byte)
+	stdoutChan := make(chan []byte)
+
+	p := &process{path: path, id: pr.newId, tty: f, command: c, stdin: stdinChan, stdout: stdoutChan}
+	pr.newId++
+	pr.processes[p.id] = p
+
+	return p, nil
+}
+
+func (pr processRegistry) GetProcess(id int) *process {
+	return pr.processes[id]
+}
+
+func main() {
+
+	registry := NewProcessRegistry()
+	proc, err := registry.NewProcess("/bin/bash")
+	if err != nil {
+		fmt.Println("Error while starting process:", err)
+		os.Exit(1)
+	}
+	go proc.ProcessStdinWorker()
+	go proc.ProcessStdoutWorker()
 
 	goavro.NewSymtab()
 
 	receiveChan := make(chan *goavro.Record)
 	sendChan := make(chan *goavro.Record)
+
 	st := goavro.NewSymtab()
 
 	inputOutputCodec, inputOutputSchema, err = LoadCodec(st, "../../../avro/InputOutput.avsc")
@@ -126,8 +182,8 @@ func main() {
 	// Close the listener when the application closes.
 	defer l.Close()
 
-	go ProcessReceiver(receiveChan, f)
-	go ProcessSender(sendChan, f)
+	go inputMessagesWorker(receiveChan, registry)
+	go outputMessagesWorker(sendChan, registry)
 
 	fmt.Println("Listening on " + CONN_HOST + ":" + CONN_PORT)
 	for {
@@ -141,7 +197,7 @@ func main() {
 		go MessageStreamWriter(messageCodec, conn, sendChan)
 	}
 
-	c.Wait()
+	registry.GetProcess(0).command.Wait()
 }
 
 type winsize struct {
