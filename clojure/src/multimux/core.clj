@@ -81,6 +81,8 @@
           (>!! msgReadChan msg)
           (recur (.read reader nil decoder))))
       (catch java.io.EOFException e
+        (log/warn "Socket exception" e))
+      (catch java.net.SocketException e
         (log/warn "Socket exception" e))))
   (async/thread
     (try
@@ -139,7 +141,7 @@
         settings (settings-provider)
         ;settings (DefaultSettingsProvider.)
         term (JediTermWidget. 75 28 settings)
-        server {:host "localhost" :port 3333}
+        connection (create-connection {:host "localhost" :port 3333})
         ;connector (connectors/tty-process-connector (connectors/create-process) (Charset/forName "UTF-8"))
         ;connector (tty-socket-connector (create-connection {:host "localhost" :port 3333})
         ;                                (Charset/forName "UTF-8"))
@@ -149,7 +151,7 @@
         termWriteChan (chan)
         connector (connectors/tty-channel-connector termReadChan termWriteChan (Charset/forName "UTF-8"))
         session (.createTerminalSession term connector)]
-    (msg-connection (create-connection server) msgReadChan msgWriteChan)
+    (msg-connection connection msgReadChan msgWriteChan)
     (message-handler msgReadChan msgWriteChan termReadChan termWriteChan)
     (.start session)
     (.setModeEnabled (.getTerminal term) (TerminalMode/CursorBlinking) false)
@@ -162,6 +164,7 @@
           (windowActivated [evt])
           (windowDeactivated [evt])
           (windowClosing [evt]
+            (.close connection)
             (log/info "GUI closed"))))
       (.setSize 1000 800)
       (.setVisible true))))
