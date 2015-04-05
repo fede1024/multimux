@@ -1,7 +1,8 @@
 {"type" : "record",
  "name" : "Resize",
  "namespace": "multimux",
- "fields" : [ {"name" : "cols", "type" : "int"},
-              {"name" : "rows", "type" : "int"},
-              {"name" : "xpixel", "type" : "int"},
-              {"name" : "ypixel", "type" : "int"} ] }
+ "fields" : [ {"name": "process", "type": "int"},
+              {"name" : "cols",   "type": "int"},
+              {"name" : "rows",   "type": "int"},
+              {"name" : "xpixel", "type": "int"},
+              {"name" : "ypixel", "type": "int"} ] }

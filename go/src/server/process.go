@@ -25,7 +25,9 @@ func (proc *Process) ProcessStdinWorker() {
 	for input := range proc.stdin {
 		nw, err := proc.tty.Write(input)
 		if err != nil {
-			log.Fatal(err)
+			log.Println(err)
+			proc.Terminate()
+			break
 		}
 		if len(input) != nw {
 			panic("Fix here")
@@ -35,18 +37,26 @@ func (proc *Process) ProcessStdinWorker() {
 }
 
 func (proc *Process) ProcessStdoutWorker() {
-	for { // TODO: check chan close
+	for {
 		buf := make([]byte, 1024)
 		reqLen, err := proc.tty.Read(buf)
 		if err != nil {
 			log.Println(err)
-			close(proc.stdout)
+			proc.Terminate()
 			break
 		}
 
 		proc.stdout <- buf[:reqLen]
 	}
 	fmt.Println("STDOUT END")
+}
+
+func (proc *Process) Terminate() {
+	if proc.alive {
+		close(proc.stdin)
+		close(proc.stdout)
+		proc.alive = false
+	}
 }
 
 type winsize struct {

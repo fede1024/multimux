@@ -4,11 +4,13 @@
             [taoensso.timbre :as log]
             [clojure.string :as str]
             [clojure.core.async :refer [>!! <!! chan alts!!] :as async])
-  (:import [javax.swing JFrame JLabel JButton]
+  (:import [javax.swing JFrame JLabel JButton JTabbedPane JPanel JSplitPane]
            [java.awt.event WindowListener]
-           [com.jediterm.terminal ProcessTtyConnector TerminalMode]
+           [java.awt Dimension]
+           [com.jediterm.terminal ProcessTtyConnector TerminalMode RequestOrigin]
            [com.jediterm.terminal.ui JediTermWidget]
            [com.jediterm.terminal.ui.settings DefaultSettingsProvider]
+           [com.jediterm.terminal.model JediTerminal$ResizeHandler]
            [java.nio.charset Charset]
            [java.nio CharBuffer ByteBuffer]
            [java.io File InputStreamReader ByteArrayOutputStream FileOutputStream]
@@ -41,6 +43,7 @@
 
 (def inputOutputSchema (.parse parser (File. "../avro/InputOutput.avsc")))
 (def resizeSchema (.parse parser (File. "../avro/Resize.avsc")))
+(def registerToProcessSchema (.parse parser (File. "../avro/RegisterToProcess.avsc")))
 (def messageSchema (.parse parser (File. "../avro/Message.avsc")))
 
 (defn settings-provider []
@@ -98,30 +101,37 @@
       (catch java.net.SocketException e
         (log/warn "Socket exception" e)))))
 
-(defn create-input-message [bytes]
-  (let [message (GenericData$Record. messageSchema)
-        inputOutput (GenericData$Record. inputOutputSchema)]
-    (.put inputOutput "bytes" (ByteBuffer/wrap bytes))
-    (.put message "messageType" "input")
-    (.put message "data" inputOutput)
+(defn create-message [messageType data]
+  (let [message (GenericData$Record. messageSchema)]
+    (.put message "messageType" messageType)
+    (.put message "data" data)
     message))
 
-(defn create-resize-message [size]
+(defn create-stdin-message [processId bytes]
+  (let [inputOutput (GenericData$Record. inputOutputSchema)]
+    (.put inputOutput "process" (int processId))
+    (.put inputOutput "bytes" (ByteBuffer/wrap bytes))
+    (create-message "stdin" inputOutput)))
+
+(defn create-resize-message [processId size]
   (let [[rows cols width height] size
-        message (GenericData$Record. messageSchema)
         resize (GenericData$Record. resizeSchema)]
     (.put resize "rows" rows)
     (.put resize "cols" cols)
     (.put resize "xpixel" width)
     (.put resize "ypixel" height)
-    (.put message "messageType" "resize")
-    (.put message "data" resize)
-    message))
+    (.put resize "process" (int processId))
+    (create-message "resize" resize)))
+
+(defn register-to-process-message [processId]
+  (let [registerToProcess (GenericData$Record. registerToProcessSchema)]
+    (.put registerToProcess "process" (int processId))
+    (create-message "registerToProcess" registerToProcess)))
 
 (defn handle-term-write [[type payload]]
   (condp = type
-    :input (create-input-message payload)
-    :resize (create-resize-message payload)))
+    :input (create-stdin-message 1234 payload)
+    :resize (create-resize-message 1234 payload)))
 
 (defn decode-term-data [data]
   (let [inputOutput (.get data "data")]
@@ -136,26 +146,75 @@
           termWriteChan (>!! msgWriteChan (handle-term-write data)))
         (recur (alts!! channels))))))
 
-(defn swing []
-  (let [frame (JFrame. "Fund manager")
-        settings (settings-provider)
-        ;settings (DefaultSettingsProvider.)
-        term (JediTermWidget. 75 28 settings)
-        connection (create-connection {:host "localhost" :port 3333})
-        ;connector (connectors/tty-process-connector (connectors/create-process) (Charset/forName "UTF-8"))
-        ;connector (tty-socket-connector (create-connection {:host "localhost" :port 3333})
-        ;                                (Charset/forName "UTF-8"))
-        msgReadChan (chan)
-        msgWriteChan (chan)
+(def panes (atom {}))
+
+(def frame (atom nil))
+
+(def connection (atom nil))
+
+(defn create-term [columns rows]
+  (let [term (JediTermWidget. columns rows (settings-provider))
         termReadChan (chan)
         termWriteChan (chan)
         connector (connectors/tty-channel-connector termReadChan termWriteChan (Charset/forName "UTF-8"))
         session (.createTerminalSession term connector)]
-    (msg-connection connection msgReadChan msgWriteChan)
-    (message-handler msgReadChan msgWriteChan termReadChan termWriteChan)
     (.start session)
     (.setModeEnabled (.getTerminal term) (TerminalMode/CursorBlinking) false)
-    (doto frame
+    (.setModeEnabled (.getTerminal term) (TerminalMode/AutoWrap) true)
+    [term termReadChan termWriteChan]))
+
+(def last-focus (atom nil))
+
+(defn get-focused-term [frame]
+  (let [component (.getMostRecentFocusOwner frame)]
+    (if (= (type component) com.jediterm.terminal.ui.TerminalPanel)
+      component
+      (log/warn "Focused object is not a terminal"))))
+
+(defn get-term-container [term]
+  (condp = (type term)
+    com.jediterm.terminal.ui.TerminalPanel (.getParent (.getParent term))
+    com.jediterm.terminal.ui.JediTermWidget (.getParent term)
+    (log/warn "get-term-container of" (type term))))
+
+(defn resize-handler []
+  (proxy [JediTerminal$ResizeHandler] []
+    (sizeUpdated [width height cursorY]
+      (log/info "Terminal resized" width height cursorY))))
+
+(defn split-panel [panel newTerm]
+  (let [term (nth (.getComponents panel) 0)
+        split (JSplitPane. (JSplitPane/HORIZONTAL_SPLIT) true term newTerm)]
+    (.remove panel term)
+    (.add panel split)
+    (.revalidate panel)))
+
+(defn split-vertical []
+  (if (not @frame)
+    (log/warn "No frame, nothing to split")
+    (let [term (get-focused-term @frame)
+          [newTerm termReadChan termWriteChan] (create-term 1 1)
+          container (get-term-container term)]
+      (.requestResize term (Dimension. (/ (.getColumnCount term) 2) (.getRowCount term))
+                      RequestOrigin/User 5 (resize-handler))
+      (condp = (type container)
+        javax.swing.JPanel (split-panel container newTerm)))))
+
+(defn swing []
+  (let [newFrame (JFrame. "Fund manager")
+        ;settings (DefaultSettingsProvider.)
+        [term termReadChan termWriteChan] (create-term 75 28)
+        ;splitPane (JSplitPane. (JSplitPane/HORIZONTAL_SPLIT) true term empty-panel)
+        ;connector (connectors/tty-process-connector (connectors/create-process) (Charset/forName "UTF-8"))
+        ;connector (tty-socket-connector (create-connection {:host "localhost" :port 3333})
+        ;                                (Charset/forName "UTF-8"))
+        msgReadChan (chan)
+        msgWriteChan (chan)]
+    (reset! connection (create-connection {:host "localhost" :port 3333}))
+    (reset! frame newFrame)
+    (msg-connection @connection msgReadChan msgWriteChan)
+    (message-handler msgReadChan msgWriteChan termReadChan termWriteChan)
+    (doto newFrame
       (.add term)
       ;(.setDefaultCloseOperation JFrame/EXIT_ON_CLOSE)
       (.addWindowListener
@@ -164,13 +223,14 @@
           (windowActivated [evt])
           (windowDeactivated [evt])
           (windowClosing [evt]
-            (.close connection)
+            (when @connection
+              (.close @connection))
             (log/info "GUI closed"))))
       (.setSize 1000 800)
+      (.pack)
       (.setVisible true))))
 
 (defn -main
-  "I don't do a whole lot ... yet."
   [& args]
   (BasicConfigurator/configure)
   (.setLevel (Logger/getRootLogger) (Level/INFO))
@@ -180,12 +240,10 @@
 
 
 (def message
-  (let [message (GenericData$Record. messageSchema)
-        inputOutput (GenericData$Record. inputOutputSchema)]
+  (let [inputOutput (GenericData$Record. inputOutputSchema)]
     (.put inputOutput "bytes" (ByteBuffer/wrap (.getBytes "date\n" (Charset/forName "UTF-8"))))
-    (.put message "messageType" "input")
-    (.put message "data" inputOutput)
-    message))
+    (.put inputOutput "process" (int 1234))
+    (create-message "stdin" inputOutput)))
 
 (let [out (ByteArrayOutputStream.)
       writer (GenericDatumWriter. messageSchema)

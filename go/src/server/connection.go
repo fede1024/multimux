@@ -6,6 +6,15 @@ import (
 	"net"
 )
 
+// type Producer interface {
+// 	GetOutputChannel() chan *interface{}
+// }
+//
+// type ProducerSet interface {
+// 	GetProducers() []*Producer
+// 	AddProducer() chan *Producer
+// }
+
 // CONNECTION
 
 type Connection struct {
@@ -19,10 +28,8 @@ func (conn *Connection) ReceiveWorker() {
 	for {
 		message, err := MessageCodec.Decode(*conn.socket)
 		if err != nil {
-			(*conn.socket).Close()
-			close(conn.recChan)
-			conn.alive = false
 			log.Println("Error decoding:", err)
+			conn.Terminate()
 			return
 		}
 
@@ -35,7 +42,7 @@ func (conn *Connection) SendWorker() {
 		err := MessageCodec.Encode(*conn.socket, message)
 		if err != nil {
 			log.Println("Error encoding:", err)
-			close(conn.sendChan)
+			conn.Terminate()
 			return
 		}
 	}
@@ -56,6 +63,15 @@ func NewConnection(l net.Listener) (*Connection, error) {
 	go conn.SendWorker()
 
 	return conn, nil
+}
+
+func (c *Connection) Terminate() {
+	if c.alive {
+		(*c.socket).Close()
+		close(c.sendChan)
+		close(c.recChan)
+		c.alive = false
+	}
 }
 
 func (c *Connection) FollowProcess(proc *Process) {

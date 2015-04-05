@@ -5,10 +5,7 @@
      {"name": "messageType",
       "type": {"type":"enum",
                "name":"messageTypes",
-               "symbols":[ "input", "output", "resize" ]
-              }
-     },
+               "symbols": [ "stdin", "stdout", "resize", "registerToProcess" ] } },
      {"name": "data",
-      "type": ["InputOutput", "Resize", "null"] }
- ]
+      "type": ["InputOutput", "Resize", "RegisterToProcess" ] } ]
 }
