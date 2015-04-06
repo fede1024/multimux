@@ -165,7 +165,7 @@
 
 (def last-focus (atom nil))
 
-(defn get-focused-term [frame]
+(defn get-focused-term-panel [frame]
   (let [component (.getMostRecentFocusOwner frame)]
     (if (= (type component) com.jediterm.terminal.ui.TerminalPanel)
       component
@@ -182,23 +182,45 @@
     (sizeUpdated [width height cursorY]
       (log/info "Terminal resized" width height cursorY))))
 
-(defn split-panel [panel newTerm]
-  (let [term (nth (.getComponents panel) 0)
-        split (JSplitPane. (JSplitPane/HORIZONTAL_SPLIT) true term newTerm)]
-    (.remove panel term)
+(defn split-panel [direction panel old-term new-term]
+  (let [orientation (if (= direction :vertical)
+                      JSplitPane/HORIZONTAL_SPLIT
+                      JSplitPane/VERTICAL_SPLIT)
+        split (JSplitPane. orientation true old-term new-term)]
+    (.remove panel old-term)
     (.add panel split)
-    (.revalidate panel)))
+    (.revalidate panel)
+    (.setResizeWeight split 0.5)))
 
-(defn split-vertical []
+(defn split-splitpane [direction splitpane old-term new-term]
+  (let [orientation (if (= direction :vertical)
+                      JSplitPane/HORIZONTAL_SPLIT
+                      JSplitPane/VERTICAL_SPLIT)
+        new-split (JSplitPane. orientation true old-term new-term)]
+    (.remove splitpane old-term)
+    (if (= (.getOrientation splitpane) JSplitPane/HORIZONTAL_SPLIT)
+      (if (.getLeftComponent splitpane)
+        (.setRightComponent splitpane new-split)
+        (.setLeftComponent splitpane new-split))
+      (if (.getTopComponent splitpane)
+        (.setBottomComponent splitpane new-split)
+        (.setTopComponent splitpane new-split)))
+    (.revalidate splitpane)
+    (.revalidate new-split)
+    (.setResizeWeight new-split 0.5)))
+
+(defn split [direction]
+  {:pre [(direction #{:vertical :horizontal})]}
   (if (not @frame)
     (log/warn "No frame, nothing to split")
-    (let [term (get-focused-term @frame)
-          [newTerm termReadChan termWriteChan] (create-term 1 1)
-          container (get-term-container term)]
-      (.requestResize term (Dimension. (/ (.getColumnCount term) 2) (.getRowCount term))
-                      RequestOrigin/User 5 (resize-handler))
+    (let [term-panel (get-focused-term-panel @frame)
+          term-widget (.getParent term-panel)
+          container (.getParent term-widget)
+          [new-term term-read-chan term-write-chan] (create-term 80 24)]
       (condp = (type container)
-        javax.swing.JPanel (split-panel container newTerm)))))
+        javax.swing.JPanel (split-panel direction container term-widget new-term)
+        javax.swing.JSplitPane (split-splitpane direction container term-widget new-term))
+      (.requestFocus (.getTerminalPanel new-term)))))
 
 (defn swing []
   (let [newFrame (JFrame. "Fund manager")
@@ -238,6 +260,16 @@
   (swing)
   (log/info "GUI started"))
 
+(defn demo []
+  (-main)
+  (Thread/sleep 1000)
+  (split :vertical)
+  (Thread/sleep 1000)
+  (split :horizontal)
+  (Thread/sleep 1000)
+  (split :vertical)
+  (Thread/sleep 1000)
+  (split :horizontal))
 
 (def message
   (let [inputOutput (GenericData$Record. inputOutputSchema)]
