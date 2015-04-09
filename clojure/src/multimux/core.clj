@@ -7,6 +7,7 @@
   (:import [javax.swing JFrame JScrollBar JPanel JSplitPane SwingUtilities]
            [java.awt.event WindowListener KeyEvent KeyListener WindowEvent]
            [java.awt Dimension GridLayout Font]
+           [clojure.core.async.impl.channels ManyToManyChannel]
            [com.jediterm.terminal ProcessTtyConnector TerminalMode RequestOrigin TerminalColor TextStyle]
            [com.jediterm.terminal.ui JediTermWidget TerminalPanel$TerminalKeyHandler]
            [com.jediterm.terminal.ui.settings DefaultSettingsProvider]
@@ -75,7 +76,7 @@
           (.write outputStream data)
           (recur (<!! writeChan)))))))
 
-(defn msg-connection [socket msgReadChan msgWriteChan]
+(defn msg-connection [socket msg-read-chan msg-write-chan]
   (when (not socket)
     (throw (Exception. "Socket is nil")))
   (async/thread
@@ -84,7 +85,7 @@
             reader (GenericDatumReader. messageSchema)
             decoder (.directBinaryDecoder (DecoderFactory/get) in nil)]
         (loop [msg (.read reader nil decoder)]
-          (>!! msgReadChan msg)
+          (>!! msg-read-chan msg)
           (recur (.read reader nil decoder))))
       (catch java.io.EOFException e
         (log/warn "Socket exception" e))
@@ -95,10 +96,10 @@
       (let [out (.getOutputStream socket)
             writer (GenericDatumWriter. messageSchema)
             encoder (.binaryEncoder (EncoderFactory/get) out nil)]
-        (loop [msg (<!! msgWriteChan)]
+        (loop [msg (<!! msg-write-chan)]
           (.write writer msg encoder)
           (.flush encoder)
-          (recur (<!! msgWriteChan))))
+          (recur (<!! msg-write-chan))))
       (catch java.io.EOFException e
         (log/warn "Interrupted stream" e))
       (catch java.net.SocketException e
@@ -126,7 +127,7 @@
     (.put resize "process" (int processId))
     (create-message "resize" resize)))
 
-(defn register-to-process-message [processId]
+(defn create-register-to-process-message [processId]
   (let [registerToProcess (GenericData$Record. registerToProcessSchema)]
     (.put registerToProcess "process" (int processId))
     (create-message "registerToProcess" registerToProcess)))
@@ -136,37 +137,53 @@
     :input (create-stdin-message 1234 payload)
     :resize (create-resize-message 1234 payload)))
 
+(defprotocol TerminalHandler
+  (read-stdout [this] "Handles an stdout read request")
+  (write-stdin [this data] "Handles an stdin write request")
+  (resize [this rows cols xpixel ypixel] "Handles a resize request")
+  (key-pressed [this event] "Handles a key press. It returns true if the key event should not be sent to
+                             the terminal (it's recognized shortcut)."))
+
 (defn decode-term-data [data]
   (let [inputOutput (.get data "data")]
     (.array (.get inputOutput "bytes"))))
 
-(defn message-handler [msgReadChan msgWriteChan termReadChan termWriteChan]
+(defn message-handler [msg-read-chan msg-write-chan stdin stdout]
   (async/thread
-    (let [channels [msgReadChan termWriteChan]]
+    (let [channels [msg-read-chan stdout]]
       (loop [[data chan] (alts!! channels)]
         (condp = chan
-          msgReadChan   (>!! termReadChan (decode-term-data data))
-          termWriteChan (>!! msgWriteChan (handle-term-write data)))
+          msg-read-chan (>!! stdin (decode-term-data data))
+          stdout        (>!! msg-write-chan (handle-term-write data)))
         (recur (alts!! channels))))))
 
-(defn get-term-widget-scrollbar [term-widget]
+;(defrecord Terminal [^int id ^JediTermWidget widget ^ManyToManyChannel stdout ^ManyToManyChannel stdin])
+
+(defrecord MultimuxTerminal [id widget])
+
+(extend MultimuxTerminal
+  connectors/TerminalHandler
+  {:read-stdout (fn [this] (Thread/sleep 10000) (println 'read) (.getBytes "lol" (Charset/forName "UTF-8")))
+   :write-stdin (fn [this data] (println 'wriiite data))
+   :resize (fn [this rows cols xpixel ypixel] (println 'resssisss))
+   :key-pressed (fn [this event] (println event))})
+
+(defn get-scrollbar [term-widget]
   (first (filter #(= (type %) javax.swing.JScrollBar)
                  (.getComponents term-widget))))
 
-(defn create-term [columns rows key-listener]
+(defn create-widget [columns rows terminal-handler]
   (let [term-widget (JediTermWidget. columns rows (settings-provider))
-        term-read-chan (chan)
-        term-write-chan (chan)
-        connector (connectors/tty-channel-connector term-read-chan term-write-chan (Charset/forName "UTF-8"))
+        ;connector (connectors/tty-channel-connector term-read-chan term-write-chan (Charset/forName "UTF-8"))
+        connector (connectors/tty-terminal-connector (->Terminal term-widget) (Charset/forName "UTF-8"))
         listener (proxy [TerminalPanel$TerminalKeyHandler] [(.getTerminalPanel term-widget)]
                    (keyPressed [event]
-                     (when (not (key-listener term-widget event))
-                       (proxy-super keyPressed event))))
-        scrollbar (get-term-widget-scrollbar term-widget)]
+                     (when (not (key-pressed terminal-handler event))
+                       (proxy-super keyPressed event))))]
     (.setTtyConnector term-widget connector)
     (.setModeEnabled (.getTerminal term-widget) (TerminalMode/CursorBlinking) false)
     (.setModeEnabled (.getTerminal term-widget) (TerminalMode/AutoWrap) true)
-    (.setVisible scrollbar false)
+    (.setVisible (get-scrollbar term-widget) false)
     ;(.start term-widget)
     ;; substitutes JediTermWidget.start() to use setKeyListener
     (async/thread
@@ -174,7 +191,7 @@
       (when (.init connector nil)
         (.setKeyListener (.getTerminalPanel term-widget) listener)
         (.start (.getTerminalStarter term-widget))))
-    [term-widget term-read-chan term-write-chan]))
+    term-widget))
 
 ; (defn get-focused-term-panel [frame]
 ;   (let [component (.getMostRecentFocusOwner frame)]
@@ -193,22 +210,22 @@
 ;     (sizeUpdated [width height cursorY]
 ;       (log/info "Terminal resized" width height cursorY))))
 
-(defn split-panel [direction panel old-term new-term]
+(defn split-panel [direction panel old-term-widget new-term-widget]
   (let [orientation (if (= direction :vertical)
                       JSplitPane/HORIZONTAL_SPLIT
                       JSplitPane/VERTICAL_SPLIT)
-        split (JSplitPane. orientation true old-term new-term)]
-    (.remove panel old-term)
+        split (JSplitPane. orientation true old-term-widget new-term-widget)]
+    (.remove panel old-term-widget)
     (.add panel split)
     (.setResizeWeight split 0.5)
     (.revalidate panel)))
 
-(defn split-splitpane [direction splitpane old-term new-term]
+(defn split-splitpane [direction splitpane old-term-widget new-term-widget]
   (let [orientation (if (= direction :vertical)
                       JSplitPane/HORIZONTAL_SPLIT
                       JSplitPane/VERTICAL_SPLIT)
-        new-split (JSplitPane. orientation true old-term new-term)]
-    (.remove splitpane old-term)
+        new-split (JSplitPane. orientation true old-term-widget new-term-widget)]
+    (.remove splitpane old-term-widget)
     (if (= (.getOrientation splitpane) JSplitPane/HORIZONTAL_SPLIT)
       (if (.getLeftComponent splitpane)
         (.setRightComponent splitpane new-split)
@@ -230,44 +247,53 @@
 ;         javax.swing.JSplitPane (split-splitpane direction container term-widget new-term))
 ;       (.requestFocus (.getTerminalPanel new-term)))))
 
-(defn split-term [term-widget direction new-term]
+(defn split-term [term-widget direction new-terminal]
   {:pre [(direction #{:vertical :horizontal})]}
   (let [term-panel (.getTerminalPanel term-widget)
         container (.getParent term-widget)]
     (condp = (type container)
-      javax.swing.JPanel (split-panel direction container term-widget new-term)
-      javax.swing.JSplitPane (split-splitpane direction container term-widget new-term))
-    (.requestFocus (.getTerminalPanel new-term))))
-
-;(def ^:dynamic term-registry nil)
+      javax.swing.JPanel (split-panel direction container term-widget (:widget new-terminal))
+      javax.swing.JSplitPane (split-splitpane direction container term-widget (:widget new-terminal)))
+    (.requestFocus (.getTerminalPanel (:widget new-terminal))))
+  new-terminal)
 
 (defn close-jframe [frame]
   (.dispatchEvent frame (WindowEvent. frame WindowEvent/WINDOW_CLOSING)))
+
+(def ^:dynamic *term-registry* (ref {}))
+
+(defn create-and-register-terminal [columns rows key-listener]
+  (let [terminal (create-term 75 28 key-listener)]
+    (dosync
+      (let [new-id (count @*term-registry*)
+            term (assoc terminal :id new-id)]
+        (alter *term-registry* assoc new-id term)
+        term))))
 
 (defn term-key-listener [term-widget event]
   (let [keyCode (.getKeyCode event)]
     (when (.isAltDown event)
       (condp = keyCode
-        KeyEvent/VK_H (do (split-term term-widget :horizontal (first (create-term 80 24 term-key-listener))) true)
-        KeyEvent/VK_V (do (split-term term-widget :vertical (first (create-term 80 24 term-key-listener))) true)
-        KeyEvent/VK_Q (do (close-jframe (SwingUtilities/getWindowAncestor term-widget)) true)
+        KeyEvent/VK_H (split-term term-widget :horizontal (create-and-register-terminal 80 24 term-key-listener))
+        KeyEvent/VK_V (split-term term-widget :vertical (create-and-register-terminal 80 24 term-key-listener))
+        KeyEvent/VK_Q (close-jframe (SwingUtilities/getWindowAncestor term-widget))
         nil))))
 
 (defn swing []
   (let [newFrame (JFrame. "Multimux")
         ;settings (DefaultSettingsProvider.)
-        [term termReadChan termWriteChan] (create-term 75 28 term-key-listener)
+        terminal (create-and-register-terminal 75 28 term-key-listener)
         ;splitPane (JSplitPane. (JSplitPane/HORIZONTAL_SPLIT) true term empty-panel)
         ;connector (connectors/tty-process-connector (connectors/create-process) (Charset/forName "UTF-8"))
         ;connector (tty-socket-connector (create-connection {:host "localhost" :port 3333})
         ;                                (Charset/forName "UTF-8"))
-        msgReadChan (chan)
-        msgWriteChan (chan)
+        msg-read-chan (chan)
+        msg-write-chan (chan)
         connection (create-connection {:host "localhost" :port 3333})]
-    (msg-connection connection msgReadChan msgWriteChan)
-    (message-handler msgReadChan msgWriteChan termReadChan termWriteChan)
+    (msg-connection connection msg-read-chan msg-write-chan)
+    ;(message-handler msg-read-chan msg-write-chan (:stdout terminal) (:stdin terminal))
     (doto newFrame
-      (.add term)
+      (.add (:widget terminal))
       ;(.setDefaultCloseOperation JFrame/EXIT_ON_CLOSE)
       (.addWindowListener
         (proxy [WindowListener]  []
@@ -287,6 +313,7 @@
   (BasicConfigurator/configure)
   (.setLevel (Logger/getRootLogger) (Level/INFO))
   (configure-logger!)
+  (dosync (ref-set *term-registry* {}))
   (swing)
   (log/info "GUI started"))
 

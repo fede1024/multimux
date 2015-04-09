@@ -7,6 +7,7 @@
            [java.util Arrays]
 ;;           [com.pty4j PtyProcess WinSize]
 ;;           [com.pty4j.util PtyUtil]
+           [com.jediterm.terminal.ui JediTermWidget]
            [org.apache.log4j BasicConfigurator Level Logger]
            [org.apache.avro.generic GenericData$Record GenericDatumWriter GenericDatumReader]
            [org.apache.avro Schema$Parser]
@@ -112,3 +113,36 @@
       (getName [] "channelTty")
       (close [] nil)    ; TODO: fix
       (waitFor [] 1)))) ; TODO: protocol wait?
+
+(defprotocol TerminalHandler
+  (read-stdout [this] "Handles an stdout read request")
+  (write-stdin [this data] "Handles an stdin write request")
+  (resize [this rows cols xpixel ypixel] "Handles a resize request")
+  (key-pressed [this event] "Handles a key press. It returns true if the key event should not be sent to
+                             the terminal (it's recognized shortcut)."))
+
+(defn tty-terminal-connector [handler charset]
+  (let [input-stream (atom (StringReader. ""))]
+    (reify com.jediterm.terminal.TtyConnector
+      (init [this q]
+        (when chan true))
+      (isConnected [this]
+        (when chan true))
+      (resize [this term-size pixel-size]
+        (resize handler (.width term-size) (.height term-size)
+                (.width pixel-size) (.height pixel-size)))
+      (read [this buf offset length]
+        (let [n (.read @input-stream buf offset length)]
+          (if (= n -1)
+            (let [input (read-stdout handler)
+                  stream (StringReader. (String. input charset))]
+              (reset! input-stream stream)
+              (.read stream buf offset length))
+            n)))
+      (^void write [this ^String buf]
+        (write-stdin handler (.getBytes buf charset)))
+      (^void write [this ^bytes buf]
+        (write-stdin handler buf))
+      (getName [this] "channelTty")
+      (close [this] nil)    ; TODO: fix
+      (waitFor [this] 1)))) ; TODO: protocol wait?
