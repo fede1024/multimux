@@ -1,16 +1,14 @@
 (ns multimux.core
   (:gen-class)
-  (:require [multimux.connectors :as connectors]
+  (:require [multimux.terminal :as term]
             [taoensso.timbre :as log]
             [clojure.string :as str]
             [clojure.core.async :refer [>!! <!! chan alts!!] :as async])
   (:import [javax.swing JFrame JScrollBar JPanel JSplitPane SwingUtilities]
            [java.awt.event WindowListener KeyEvent KeyListener WindowEvent]
-           [java.awt Dimension GridLayout Font]
+           [java.awt GridLayout]
            [clojure.core.async.impl.channels ManyToManyChannel]
-           [com.jediterm.terminal ProcessTtyConnector TerminalMode RequestOrigin TerminalColor TextStyle]
            [com.jediterm.terminal.ui JediTermWidget TerminalPanel$TerminalKeyHandler]
-           [com.jediterm.terminal.ui.settings DefaultSettingsProvider]
            [java.nio.charset Charset]
            [java.nio CharBuffer ByteBuffer]
            [java.io File InputStreamReader ByteArrayOutputStream FileOutputStream]
@@ -46,17 +44,6 @@
 (def registerToProcessSchema (.parse parser (File. "../avro/RegisterToProcess.avsc")))
 (def messageSchema (.parse parser (File. "../avro/Message.avsc")))
 
-(defn settings-provider []
-  (proxy [DefaultSettingsProvider] []
-    (maxRefreshRate [] 50)
-    (scrollToBottomOnTyping [] true)
-    (getBufferMaxLinesCount [] 1000)
-    (useAntialiasing [] true)
-    (getTerminalFontSize [] 22)
-    (getDefaultStyle []
-      (TextStyle. (TerminalColor. 255 255 255) (TerminalColor. 6 26 39)))
-    (getTerminalFont []
-      (.deriveFont (Font/decode "DejaVu Sans Mono for Powerline") 22.0))))
 
 (defn socket-to-chan [server readChan writeChan]
   (let [socket (create-connection server)
@@ -137,61 +124,28 @@
     :input (create-stdin-message 1234 payload)
     :resize (create-resize-message 1234 payload)))
 
-(defprotocol TerminalHandler
-  (read-stdout [this] "Handles an stdout read request")
-  (write-stdin [this data] "Handles an stdin write request")
-  (resize [this rows cols xpixel ypixel] "Handles a resize request")
-  (key-pressed [this event] "Handles a key press. It returns true if the key event should not be sent to
-                             the terminal (it's recognized shortcut)."))
-
 (defn decode-term-data [data]
   (let [inputOutput (.get data "data")]
     (.array (.get inputOutput "bytes"))))
 
-(defn message-handler [msg-read-chan msg-write-chan stdin stdout]
+; (defn message-handler [msg-read-chan msg-write-chan stdin stdout]
+;   (async/thread
+;     (let [channels [msg-read-chan stdout]]
+;       (loop [[data chan] (alts!! channels)]
+;         (condp = chan
+;           msg-read-chan (>!! stdin (decode-term-data data))
+;           stdout        (>!! msg-write-chan (handle-term-write data)))
+;         (recur (alts!! channels))))))
+
+(defn message-handler [msg-read-chan msg-write-chan term-register]
   (async/thread
-    (let [channels [msg-read-chan stdout]]
-      (loop [[data chan] (alts!! channels)]
-        (condp = chan
-          msg-read-chan (>!! stdin (decode-term-data data))
-          stdout        (>!! msg-write-chan (handle-term-write data)))
-        (recur (alts!! channels))))))
-
-;(defrecord Terminal [^int id ^JediTermWidget widget ^ManyToManyChannel stdout ^ManyToManyChannel stdin])
-
-(defrecord MultimuxTerminal [id widget])
-
-(extend MultimuxTerminal
-  connectors/TerminalHandler
-  {:read-stdout (fn [this] (Thread/sleep 10000) (println 'read) (.getBytes "lol" (Charset/forName "UTF-8")))
-   :write-stdin (fn [this data] (println 'wriiite data))
-   :resize (fn [this rows cols xpixel ypixel] (println 'resssisss))
-   :key-pressed (fn [this event] (println event))})
-
-(defn get-scrollbar [term-widget]
-  (first (filter #(= (type %) javax.swing.JScrollBar)
-                 (.getComponents term-widget))))
-
-(defn create-widget [columns rows terminal-handler]
-  (let [term-widget (JediTermWidget. columns rows (settings-provider))
-        ;connector (connectors/tty-channel-connector term-read-chan term-write-chan (Charset/forName "UTF-8"))
-        connector (connectors/tty-terminal-connector (->Terminal term-widget) (Charset/forName "UTF-8"))
-        listener (proxy [TerminalPanel$TerminalKeyHandler] [(.getTerminalPanel term-widget)]
-                   (keyPressed [event]
-                     (when (not (key-pressed terminal-handler event))
-                       (proxy-super keyPressed event))))]
-    (.setTtyConnector term-widget connector)
-    (.setModeEnabled (.getTerminal term-widget) (TerminalMode/CursorBlinking) false)
-    (.setModeEnabled (.getTerminal term-widget) (TerminalMode/AutoWrap) true)
-    (.setVisible (get-scrollbar term-widget) false)
-    ;(.start term-widget)
-    ;; substitutes JediTermWidget.start() to use setKeyListener
-    (async/thread
-      (.setName (Thread/currentThread) (str "Connector-" (.getName connector)))
-      (when (.init connector nil)
-        (.setKeyListener (.getTerminalPanel term-widget) listener)
-        (.start (.getTerminalStarter term-widget))))
-    term-widget))
+    (loop [[data chan] (alts!! (conj (keys @term-register) msg-read-chan))]
+      (if (= chan msg-read-chan)
+        (let [bytes (decode-term-data data)]
+          (doseq [term (vals @term-register)]
+            (>!! (:screen term) bytes)))
+        (>!! msg-write-chan (handle-term-write data)))
+      (recur (alts!! (conj (keys @term-register) msg-read-chan))))))
 
 ; (defn get-focused-term-panel [frame]
 ;   (let [component (.getMostRecentFocusOwner frame)]
@@ -260,15 +214,12 @@
 (defn close-jframe [frame]
   (.dispatchEvent frame (WindowEvent. frame WindowEvent/WINDOW_CLOSING)))
 
-(def ^:dynamic *term-registry* (ref {}))
+(def ^:dynamic *term-register* (ref {}))
 
 (defn create-and-register-terminal [columns rows key-listener]
-  (let [terminal (create-term 75 28 key-listener)]
-    (dosync
-      (let [new-id (count @*term-registry*)
-            term (assoc terminal :id new-id)]
-        (alter *term-registry* assoc new-id term)
-        term))))
+  (let [terminal (term/create 75 28 key-listener)]
+    (dosync (alter *term-register* assoc (:keyboard terminal) terminal))
+    terminal))
 
 (defn term-key-listener [term-widget event]
   (let [keyCode (.getKeyCode event)]
@@ -279,19 +230,9 @@
         KeyEvent/VK_Q (close-jframe (SwingUtilities/getWindowAncestor term-widget))
         nil))))
 
-(defn swing []
-  (let [newFrame (JFrame. "Multimux")
-        ;settings (DefaultSettingsProvider.)
-        terminal (create-and-register-terminal 75 28 term-key-listener)
-        ;splitPane (JSplitPane. (JSplitPane/HORIZONTAL_SPLIT) true term empty-panel)
-        ;connector (connectors/tty-process-connector (connectors/create-process) (Charset/forName "UTF-8"))
-        ;connector (tty-socket-connector (create-connection {:host "localhost" :port 3333})
-        ;                                (Charset/forName "UTF-8"))
-        msg-read-chan (chan)
-        msg-write-chan (chan)
-        connection (create-connection {:host "localhost" :port 3333})]
-    (msg-connection connection msg-read-chan msg-write-chan)
-    ;(message-handler msg-read-chan msg-write-chan (:stdout terminal) (:stdin terminal))
+(defn create-and-show-frame [title on-close]
+  (let [newFrame (JFrame. title)
+        terminal (create-and-register-terminal 75 28 term-key-listener)]
     (doto newFrame
       (.add (:widget terminal))
       ;(.setDefaultCloseOperation JFrame/EXIT_ON_CLOSE)
@@ -301,20 +242,24 @@
           (windowActivated [evt])
           (windowDeactivated [evt])
           (windowClosing [evt]
-            (when connection
-              (.close connection))
+            (on-close)
             (log/info "GUI closed"))))
       (.setSize 1000 800)
       (.pack)
       (.setVisible true))))
 
-(defn -main
-  [& args]
+(defn -main [& args]
   (BasicConfigurator/configure)
   (.setLevel (Logger/getRootLogger) (Level/INFO))
   (configure-logger!)
-  (dosync (ref-set *term-registry* {}))
-  (swing)
+  (dosync (ref-set *term-register* {}))
+  (let [connection (create-connection {:host "localhost" :port 3333})
+        msg-read-chan (chan 100)
+        msg-write-chan (chan 100)]
+    (create-and-show-frame "Multimux" #(when connection (.close connection)))
+    (msg-connection connection msg-read-chan msg-write-chan)
+    ;(message-handler msg-read-chan msg-write-chan (:stdout (get @*term-registry* 0)) (:stdin (get @*term-registry* 0))))
+    (message-handler msg-read-chan msg-write-chan *term-register*))
   (log/info "GUI started"))
 
 (def message
