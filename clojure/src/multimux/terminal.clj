@@ -24,6 +24,7 @@
   (let [input-stream (atom (StringReader. ""))]
     (reify com.jediterm.terminal.TtyConnector
       (init [this q]
+        (>!! keyboard [:initialize nil])
         (when chan true))
       (isConnected [this]
         (when chan true))
@@ -63,7 +64,7 @@
   (first (filter #(= (type %) javax.swing.JScrollBar)
                  (.getComponents term-widget))))
 
-(defn create [columns rows key-listener]
+(defn create-term [columns rows key-listener]
   (let [term-widget (JediTermWidget. columns rows (settings-provider))
         screen (chan 100)
         keyboard (chan 100)

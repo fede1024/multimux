@@ -1,5 +1,5 @@
 {"type" : "record",
  "name" : "InputOutput",
  "namespace": "multimux",
- "fields" : [ {"name": "process", "type": "int" },
-              {"name": "bytes",   "type": "bytes"} ] }
+ "fields" : [ {"name": "processId", "type": "int" },
+              {"name": "bytes",     "type": "bytes"} ] }

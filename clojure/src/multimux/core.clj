@@ -100,7 +100,7 @@
 
 (defn create-stdin-message [processId bytes]
   (let [inputOutput (GenericData$Record. inputOutputSchema)]
-    (.put inputOutput "process" (int processId))
+    (.put inputOutput "processId" (int processId))
     (.put inputOutput "bytes" (ByteBuffer/wrap bytes))
     (create-message "stdin" inputOutput)))
 
@@ -111,19 +111,20 @@
     (.put resize "cols" cols)
     (.put resize "xpixel" width)
     (.put resize "ypixel" height)
-    (.put resize "process" (int processId))
+    (.put resize "processId" (int processId))
     (create-message "resize" resize)))
 
 (defn create-register-to-process-message [processId]
   (let [registerToProcess (GenericData$Record. registerToProcessSchema)]
-    (.put registerToProcess "process" (int processId))
+    (.put registerToProcess "processId" (int processId))
     (create-message "registerToProcess" registerToProcess)))
 
 (defn decode-message [^GenericData$Record message]
-  (let [^GenericData$EnumSymbol message-type (.get message "messageType")
+  (let [message-type (keyword (str (.get message "messageType")))
         ^GenericData$Record payload (.get message "data")]
-    (condp = (str message-type)
-      "stdout" [(int (.get payload "process")) (.array (.get payload "bytes"))])))
+    (merge {:message-type message-type}
+           (condp = message-type
+             :stdout {:process-id (int (.get payload "processId")) :bytes (.array (.get payload "bytes"))}))))
 
 ; (defn message-handler [msg-read-chan msg-write-chan stdin stdout]
 ;   (async/thread
@@ -135,24 +136,28 @@
 ;         (recur (alts!! channels))))))
 
 (defn incoming-message-handler [message chan term-register]
-  (let [[processId bytes] (decode-message message)]
-    (println 'pii processId)
-    (doseq [term (get (:followers term-register) processId)]
-      (>!! (:screen term) bytes))))
+  (condp = (:message-type message)
+    :stdout (doseq [term (get-in term-register [:followers (:process-id message)])]
+              (>!! (:screen term) (:bytes message)))
+    (log/error "Unknown message type" (:message-type message))))
 
-(defn term-write-handler [[type payload] keyboard-chan term-register msg-write-handler]
+(defn term-write-handler [[input-type payload] keyboard-chan term-register msg-write-handler]
   (if-let [process-id (:process-id (get (:terminals term-register) keyboard-chan))]
-    (let [message (condp = type
+    (let [message (condp = input-type
                     :input (create-stdin-message process-id payload)
-                    :resize (create-resize-message process-id payload))]
-      (>!! msg-write-handler message))))
+                    :resize (create-resize-message process-id payload)
+                    :initialize (log/error "Terminal is already initialized"))]
+      (when message (>!! msg-write-handler message)))
+    (if (= input-type :initialize)
+      (>!! msg-write-handler (create-register-to-process-message -1))
+      (log/warn "No process id associated to message" input-type))))
 
 (defn message-handler [msg-read-chan msg-write-chan term-register]
   (async/thread
     (loop []
       (let [[data chan] (alts!! (conj (keys (:terminals @term-register)) msg-read-chan))]
         (if (= chan msg-read-chan)
-          (incoming-message-handler data chan @term-register)
+          (incoming-message-handler (decode-message data) chan @term-register)
           (term-write-handler data chan @term-register msg-write-chan)))
       (recur))))
 
@@ -239,8 +244,8 @@
       (update-in [:followers process-id] #(if % (conj % term) #{term}))
       (assoc-in [:terminals (:keyboard terminal)] term))))
 
-(defn create-and-register-terminal [columns rows key-listener]
-  (let [terminal (term/create columns rows key-listener)]
+(defn create-terminal-and-process [columns rows key-listener]
+  (let [terminal (term/create-term columns rows key-listener)]
     (dosync (alter *term-register* add-term-to-register terminal))
     terminal))
 
@@ -248,14 +253,14 @@
   (let [keyCode (.getKeyCode event)]
     (when (.isAltDown event)
       (condp = keyCode
-        KeyEvent/VK_H (split-term term-widget :horizontal (create-and-register-terminal 80 24 term-key-listener))
-        KeyEvent/VK_V (split-term term-widget :vertical (create-and-register-terminal 80 24 term-key-listener))
+        KeyEvent/VK_H (split-term term-widget :horizontal (create-terminal-and-process 80 24 term-key-listener))
+        KeyEvent/VK_V (split-term term-widget :vertical (create-terminal-and-process 80 24 term-key-listener))
         KeyEvent/VK_Q (close-jframe (SwingUtilities/getWindowAncestor term-widget))
         nil))))
 
 (defn create-and-show-frame [title on-close]
   (let [newFrame (JFrame. title)
-        terminal (create-and-register-terminal 75 28 term-key-listener)]
+        terminal (create-terminal-and-process 75 28 term-key-listener)]
     (doto newFrame
       (.add (:widget terminal))
       ;(.setDefaultCloseOperation JFrame/EXIT_ON_CLOSE)
@@ -276,24 +281,25 @@
   (.setLevel (Logger/getRootLogger) (Level/INFO))
   (configure-logger!)
   (dosync (ref-set *term-register* (create-term-register)))
-  (let [connection (create-connection {:host "localhost" :port 3333})
-        msg-read-chan (chan 100)
-        msg-write-chan (chan 100)]
-    (create-and-show-frame "Multimux" #(when connection (.close connection)))
-    (dosync
-      (alter *term-register* register-follow-process (first (vals (:terminals @*term-register*))) 0))
-    (msg-connection connection msg-read-chan msg-write-chan)
-    ;(message-handler msg-read-chan msg-write-chan (:stdout (get @*term-registry* 0)) (:stdin (get @*term-registry* 0))))
-    (message-handler msg-read-chan msg-write-chan *term-register*))
+  (if-let [connection (create-connection {:host "localhost" :port 3333})]
+    (let [msg-read-chan (chan 100)
+          msg-write-chan (chan 100)]
+      (create-and-show-frame "Multimux" #(when connection (.close connection)))
+      (dosync
+        (alter *term-register* register-follow-process (first (vals (:terminals @*term-register*))) 0))
+      (msg-connection connection msg-read-chan msg-write-chan)
+      ;(message-handler msg-read-chan msg-write-chan (:stdout (get @*term-registry* 0)) (:stdin (get @*term-registry* 0))))
+      (message-handler msg-read-chan msg-write-chan *term-register*))
+    (log/error "Connection not established"))
   (log/info "GUI started"))
 
-(dosync
-  (alter *term-register* register-follow-process (first (vals (:terminals @*term-register*))) 1))
+;(dosync
+;  (alter *term-register* register-follow-process (first (vals (:terminals @*term-register*))) 1))
 
 (def message
   (let [inputOutput (GenericData$Record. inputOutputSchema)]
     (.put inputOutput "bytes" (ByteBuffer/wrap (.getBytes "date\n" (Charset/forName "UTF-8"))))
-    (.put inputOutput "process" (int 1234))
+    (.put inputOutput "processId" (int 1234))
     (create-message "stdin" inputOutput)))
 
 (let [out (ByteArrayOutputStream.)

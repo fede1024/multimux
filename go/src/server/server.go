@@ -29,14 +29,14 @@ func processInputMessage(msg *goavro.Record, pReg *ProcessRegistry) {
 	dataRecord := payload.(*goavro.Record)
 	if messageType == "stdin" {
 		bytesRaw, _ := dataRecord.Get("bytes")
-		processIdRaw, _ := dataRecord.Get("process")
+		processIdRaw, _ := dataRecord.Get("processId")
 		processId := int(processIdRaw.(int32))
 		log.Printf("msg for %d out of %d\n", processId, len(pReg.processes))
 		if pReg.GetProcess(processId).alive {
-			pReg.GetProcess(processId).stdin <- bytesRaw.([]byte)
+			pReg.GetProcess(processId).stdin <- bytesRaw.([]byte) // TODO: put a select here?
 		}
 	} else if messageType == "resize" {
-		processIdRaw, _ := dataRecord.Get("process")
+		processIdRaw, _ := dataRecord.Get("processId")
 		processId := int(processIdRaw.(int32))
 
 		cols, _ := dataRecord.Get("cols")
@@ -47,6 +47,21 @@ func processInputMessage(msg *goavro.Record, pReg *ProcessRegistry) {
 		if pReg.GetProcess(processId).alive {
 			pReg.GetProcess(processId).setSize(cols.(int32), rows.(int32), xpixel.(int32), ypixel.(int32))
 		}
+	} else if messageType == "registerToProcess" {
+		processIdRaw, _ := dataRecord.Get("processId")
+		processId := int(processIdRaw.(int32))
+
+		if processId < 0 {
+			proc, err := NewProcess("/bin/bash")
+			if err != nil {
+				fmt.Println("Error while starting process:", err)
+				os.Exit(1)
+			}
+			pReg.AddProcess(proc)
+			log.Printf("New process")
+		}
+	} else {
+		log.Printf("Unknown message type: %s", messageType)
 	}
 }
 
@@ -142,12 +157,6 @@ func main() {
 		}
 		connRegistry.AddConnection(conn)
 
-		proc, err := NewProcess("/bin/bash")
-		if err != nil {
-			fmt.Println("Error while starting process:", err)
-			os.Exit(1)
-		}
-		procRegistry.AddProcess(proc)
 		log.Printf("Total processes: %d\n", len(procRegistry.processes))
 	}
 }
