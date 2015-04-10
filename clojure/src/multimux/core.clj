@@ -15,7 +15,7 @@
            [java.net Socket]
            [java.util Arrays]
            [org.apache.log4j BasicConfigurator Level Logger]
-           [org.apache.avro.generic GenericData$Record GenericDatumWriter GenericDatumReader]
+           [org.apache.avro.generic GenericData$Record GenericData$EnumSymbol GenericDatumWriter GenericDatumReader]
            [org.apache.avro Schema$Parser]
            [org.apache.avro.io BinaryEncoder BinaryDecoder EncoderFactory DecoderFactory]
            [org.apache.avro.file DataFileWriter DataFileReader DataFileStream]))
@@ -119,14 +119,11 @@
     (.put registerToProcess "process" (int processId))
     (create-message "registerToProcess" registerToProcess)))
 
-(defn handle-term-write [[type payload]]
-  (condp = type
-    :input (create-stdin-message 1234 payload)
-    :resize (create-resize-message 1234 payload)))
-
-(defn decode-term-data [data]
-  (let [inputOutput (.get data "data")]
-    (.array (.get inputOutput "bytes"))))
+(defn decode-message [^GenericData$Record message]
+  (let [^GenericData$EnumSymbol message-type (.get message "messageType")
+        ^GenericData$Record payload (.get message "data")]
+    (condp = (str message-type)
+      "stdout" [(int (.get payload "process")) (.array (.get payload "bytes"))])))
 
 ; (defn message-handler [msg-read-chan msg-write-chan stdin stdout]
 ;   (async/thread
@@ -137,15 +134,27 @@
 ;           stdout        (>!! msg-write-chan (handle-term-write data)))
 ;         (recur (alts!! channels))))))
 
+(defn incoming-message-handler [message chan term-register]
+  (let [[processId bytes] (decode-message message)]
+    (println 'pii processId)
+    (doseq [term (get (:followers term-register) processId)]
+      (>!! (:screen term) bytes))))
+
+(defn term-write-handler [[type payload] keyboard-chan term-register msg-write-handler]
+  (if-let [process-id (:process-id (get (:terminals term-register) keyboard-chan))]
+    (let [message (condp = type
+                    :input (create-stdin-message process-id payload)
+                    :resize (create-resize-message process-id payload))]
+      (>!! msg-write-handler message))))
+
 (defn message-handler [msg-read-chan msg-write-chan term-register]
   (async/thread
-    (loop [[data chan] (alts!! (conj (keys @term-register) msg-read-chan))]
-      (if (= chan msg-read-chan)
-        (let [bytes (decode-term-data data)]
-          (doseq [term (vals @term-register)]
-            (>!! (:screen term) bytes)))
-        (>!! msg-write-chan (handle-term-write data)))
-      (recur (alts!! (conj (keys @term-register) msg-read-chan))))))
+    (loop []
+      (let [[data chan] (alts!! (conj (keys (:terminals @term-register)) msg-read-chan))]
+        (if (= chan msg-read-chan)
+          (incoming-message-handler data chan @term-register)
+          (term-write-handler data chan @term-register msg-write-chan)))
+      (recur))))
 
 ; (defn get-focused-term-panel [frame]
 ;   (let [component (.getMostRecentFocusOwner frame)]
@@ -214,11 +223,25 @@
 (defn close-jframe [frame]
   (.dispatchEvent frame (WindowEvent. frame WindowEvent/WINDOW_CLOSING)))
 
-(def ^:dynamic *term-register* (ref {}))
+(def ^:dynamic *term-register* (ref nil))
+
+(defrecord TermRegister [terminals followers])
+
+(defn create-term-register []
+  (->TermRegister {} {}))
+
+(defn add-term-to-register [register terminal]
+  (assoc-in register [:terminals (:keyboard terminal)] terminal))
+
+(defn register-follow-process [register terminal process-id]
+  (let [term (assoc terminal :process-id process-id)]
+   (-> register
+      (update-in [:followers process-id] #(if % (conj % term) #{term}))
+      (assoc-in [:terminals (:keyboard terminal)] term))))
 
 (defn create-and-register-terminal [columns rows key-listener]
-  (let [terminal (term/create 75 28 key-listener)]
-    (dosync (alter *term-register* assoc (:keyboard terminal) terminal))
+  (let [terminal (term/create columns rows key-listener)]
+    (dosync (alter *term-register* add-term-to-register terminal))
     terminal))
 
 (defn term-key-listener [term-widget event]
@@ -252,15 +275,20 @@
   (BasicConfigurator/configure)
   (.setLevel (Logger/getRootLogger) (Level/INFO))
   (configure-logger!)
-  (dosync (ref-set *term-register* {}))
+  (dosync (ref-set *term-register* (create-term-register)))
   (let [connection (create-connection {:host "localhost" :port 3333})
         msg-read-chan (chan 100)
         msg-write-chan (chan 100)]
     (create-and-show-frame "Multimux" #(when connection (.close connection)))
+    (dosync
+      (alter *term-register* register-follow-process (first (vals (:terminals @*term-register*))) 0))
     (msg-connection connection msg-read-chan msg-write-chan)
     ;(message-handler msg-read-chan msg-write-chan (:stdout (get @*term-registry* 0)) (:stdin (get @*term-registry* 0))))
     (message-handler msg-read-chan msg-write-chan *term-register*))
   (log/info "GUI started"))
+
+(dosync
+  (alter *term-register* register-follow-process (first (vals (:terminals @*term-register*))) 1))
 
 (def message
   (let [inputOutput (GenericData$Record. inputOutputSchema)]

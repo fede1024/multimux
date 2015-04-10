@@ -29,17 +29,23 @@ func processInputMessage(msg *goavro.Record, pReg *ProcessRegistry) {
 	dataRecord := payload.(*goavro.Record)
 	if messageType == "stdin" {
 		bytesRaw, _ := dataRecord.Get("bytes")
-		if pReg.GetProcess(0).alive {
-			pReg.GetProcess(0).stdin <- bytesRaw.([]byte)
+		processIdRaw, _ := dataRecord.Get("process")
+		processId := int(processIdRaw.(int32))
+		log.Printf("msg for %d out of %d\n", processId, len(pReg.processes))
+		if pReg.GetProcess(processId).alive {
+			pReg.GetProcess(processId).stdin <- bytesRaw.([]byte)
 		}
 	} else if messageType == "resize" {
+		processIdRaw, _ := dataRecord.Get("process")
+		processId := int(processIdRaw.(int32))
+
 		cols, _ := dataRecord.Get("cols")
 		rows, _ := dataRecord.Get("rows")
 		xpixel, _ := dataRecord.Get("xpixel")
 		ypixel, _ := dataRecord.Get("ypixel")
 
-		if pReg.GetProcess(0).alive {
-			pReg.GetProcess(0).setSize(cols.(int32), rows.(int32), xpixel.(int32), ypixel.(int32))
+		if pReg.GetProcess(processId).alive {
+			pReg.GetProcess(processId).setSize(cols.(int32), rows.(int32), xpixel.(int32), ypixel.(int32))
 		}
 	}
 }
@@ -142,5 +148,6 @@ func main() {
 			os.Exit(1)
 		}
 		procRegistry.AddProcess(proc)
+		log.Printf("Total processes: %d\n", len(procRegistry.processes))
 	}
 }
