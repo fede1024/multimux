@@ -15,7 +15,7 @@ const (
 	CONN_TYPE = "tcp"
 )
 
-func processInputMessage(msg *goavro.Record, pReg *ProcessRegistry) {
+func processInputMessage(msg *goavro.Record, pReg *ProcessRegistry, conn *Connection) {
 	messageType, err := msg.Get("messageType")
 	if err != nil {
 		fmt.Println(err)
@@ -56,27 +56,26 @@ func processInputMessage(msg *goavro.Record, pReg *ProcessRegistry) {
 			pReg.GetProcess(processId).SetSize(cols.(int32), rows.(int32), xpixel.(int32), ypixel.(int32))
 		}
 	} else if messageType == "createProcess" {
-		pathRaw, err := dataRecord.Get("path")
-		path := pathRaw.(string)
-		sizeRaw, err := dataRecord.Get("size")
-		size := sizeRaw.(*goavro.Record)
-		cols, _ := size.Get("cols")
-		rows, _ := size.Get("rows")
-		xpixel, _ := size.Get("xpixel")
-		ypixel, _ := size.Get("ypixel")
+		path, err := dataRecord.Get("path")
+		cols, _ := dataRecord.Get("cols")
+		rows, _ := dataRecord.Get("rows")
+		xpixel, _ := dataRecord.Get("xpixel")
+		ypixel, _ := dataRecord.Get("ypixel")
 
-		proc, err := NewProcess(path)
+		proc, err := NewProcess(path.(string))
 		if err != nil {
 			log.Println("Error while creating process:", err)
 			os.Exit(1)
 		}
 		proc.SetSize(cols.(int32), rows.(int32), xpixel.(int32), ypixel.(int32))
-		if err = proc.Start("/bin/bash"); err != nil {
+		if err = proc.Start(); err != nil {
 			log.Println("Error while starting process:", err)
 			os.Exit(1)
 		}
 		pReg.AddProcess(proc)
 		log.Printf("New process")
+
+		conn.sendChan <- NewProcessCreationMessage(proc.id)
 	} else {
 		log.Printf("Unknown message type: %s", messageType)
 	}
@@ -100,7 +99,7 @@ func inputMessagesWorker(pReg *ProcessRegistry, cReg *ConnectionRegistry) {
 				log.Println("New connection notified")
 				continue
 			}
-			processInputMessage(value.Interface().(*goavro.Record), pReg)
+			processInputMessage(value.Interface().(*goavro.Record), pReg, caseToConnection[chosen])
 		} else {
 			if chosen == 0 {
 				log.Fatal("This should never happen")
@@ -131,7 +130,7 @@ func outputMessagesWorker(pReg *ProcessRegistry, cReg *ConnectionRegistry) {
 			}
 			for _, conn := range cReg.connections {
 				if conn.alive {
-					conn.sendChan <- MakeOutputMessage(value.Interface().([]byte), proc.id)
+					conn.sendChan <- NewOutputMessage(value.Interface().([]byte), proc.id)
 				}
 			}
 		} else {

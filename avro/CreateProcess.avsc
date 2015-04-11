@@ -1,5 +1,9 @@
 {"type" : "record",
  "name" : "CreateProcess",
  "namespace": "multimux",
- "fields" : [ {"name": "path", "type": "string" },
-              {"name": "size", "type": "TermSize" } ] }
+ "fields" : [ {"name": "path",      "type": "string", "default": ""},
+              {"name": "processId", "type": "int",    "default": -1},
+              {"name": "cols",      "type": "int",    "default": 0},
+              {"name": "rows",      "type": "int",    "default": 0},
+              {"name": "xpixel",    "type": "int",    "default": 0},
+              {"name": "ypixel",    "type": "int",    "default": 0} ] }

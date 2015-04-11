@@ -40,7 +40,7 @@
 (def parser (Schema$Parser.))
 
 (def inputOutputSchema (.parse parser (File. "../avro/InputOutput.avsc")))
-(def termSizeSchema (.parse parser (File. "../avro/TermSize.avsc")))
+(def resizeSchema (.parse parser (File. "../avro/Resize.avsc")))
 (def createProcessSchema (.parse parser (File. "../avro/CreateProcess.avsc")))
 (def attachToProcessSchema (.parse parser (File. "../avro/AttachToProcess.avsc")))
 (def messageSchema (.parse parser (File. "../avro/Message.avsc")))
@@ -106,13 +106,13 @@
 
 (defn create-resize-message [processId size]
   (let [[rows cols width height] size
-        size (GenericData$Record. termSizeSchema)]
-    (.put size "rows" rows)
-    (.put size "cols" cols)
-    (.put size "xpixel" width)
-    (.put size "ypixel" height)
-    (.put size "processId" (int processId))
-    (create-message "resize" size)))
+        resize (GenericData$Record. resizeSchema)]
+    (.put resize "rows" rows)
+    (.put resize "cols" cols)
+    (.put resize "xpixel" width)
+    (.put resize "ypixel" height)
+    (.put resize "processId" (int processId))
+    (create-message "resize" resize)))
 
 (defn create-attach-to-process-message [processId]
   (let [attachToProcess (GenericData$Record. attachToProcessSchema)]
@@ -120,14 +120,12 @@
     (create-message "attachToProcess" attachToProcess)))
 
 (defn create-create-process-message [rows cols width height]
-  (let [createProcess (GenericData$Record. createProcessSchema)
-        size (GenericData$Record. termSizeSchema)]
-    (.put size "rows" rows)
-    (.put size "cols" cols)
-    (.put size "xpixel" width)
-    (.put size "ypixel" height)
-    (.put size "processId" 0)
-    (.put createProcess "size" size)
+  (let [createProcess (GenericData$Record. createProcessSchema)]
+    (.put createProcess "rows" rows)
+    (.put createProcess "cols" cols)
+    (.put createProcess "xpixel" width)
+    (.put createProcess "ypixel" height)
+    (.put createProcess "processId" -1)
     (.put createProcess "path" "/bin/bash")
     (create-message "createProcess" createProcess)))
 
@@ -136,7 +134,9 @@
         ^GenericData$Record payload (.get message "data")]
     (merge {:message-type message-type}
            (condp = message-type
-             :stdout {:process-id (int (.get payload "processId")) :bytes (.array (.get payload "bytes"))}))))
+             :stdout {:process-id (int (.get payload "processId")) :bytes (.array (.get payload "bytes"))}
+             :createProcess {:process-id (int (.get payload "processId"))}
+             (log/error "Unknown message type" message-type)))))
 
 ; (defn message-handler [msg-read-chan msg-write-chan stdin stdout]
 ;   (async/thread
@@ -149,12 +149,16 @@
 
 (defn incoming-message-handler [message chan term-register]
   (condp = (:message-type message)
-    :stdout (doseq [term (get-in term-register [:followers (:process-id message)])]
+    :stdout (doseq [term (get-in @term-register [:followers (:process-id message)])]
               (>!! (:screen term) (:bytes message)))
+    :createProcess (let [term (first (filter #(= (:process-id %) -1) (vals (:terminals @term-register))))]
+                     (if term
+                       (dosync (alter term-register register-follow-process term (:process-id message)))
+                       (log/error "Received process creation feedback, but no unattached terminal is present")))
     (log/error "Unknown message type" (:message-type message))))
 
 (defn term-write-handler [[input-type payload] keyboard-chan term-register msg-write-handler]
-  (let [term (get (:terminals term-register) keyboard-chan)]
+  (let [term (get (:terminals @term-register) keyboard-chan)]
     (if (>= (:process-id term) 0)
       (let [message (condp = input-type
                       :input (create-stdin-message (:process-id term) payload)
@@ -162,7 +166,7 @@
                       :initialize (log/error "Terminal is already initialized"))]
         (when message (>!! msg-write-handler message)))
       (if (= input-type :initialize)
-        (>!! msg-write-handler (apply create-create-process-message @(:size-ref term)))
+        (>!! msg-write-handler (apply create-create-process-message (term/get-term-size term)))
         (log/warn "No process id associated to message" input-type)))))
 
 (defn message-handler [msg-read-chan msg-write-chan term-register]
@@ -170,8 +174,8 @@
     (loop []
       (let [[data chan] (alts!! (conj (keys (:terminals @term-register)) msg-read-chan))]
         (if (= chan msg-read-chan)
-          (incoming-message-handler (decode-message data) chan @term-register)
-          (term-write-handler data chan @term-register msg-write-chan)))
+          (incoming-message-handler (decode-message data) chan term-register)
+          (term-write-handler data chan term-register msg-write-chan)))
       (recur))))
 
 ; (defn get-focused-term-panel [frame]
@@ -298,16 +302,10 @@
     (let [msg-read-chan (chan 100)
           msg-write-chan (chan 100)]
       (create-and-show-frame "Multimux" #(when connection (.close connection)))
-      ;(dosync
-      ;  (alter *term-register* register-follow-process (first (vals (:terminals @*term-register*))) 0))
       (msg-connection connection msg-read-chan msg-write-chan)
-      ;(message-handler msg-read-chan msg-write-chan (:stdout (get @*term-registry* 0)) (:stdin (get @*term-registry* 0))))
       (message-handler msg-read-chan msg-write-chan *term-register*))
     (log/error "Connection not established"))
   (log/info "GUI started"))
-
-;(dosync
-;  (alter *term-register* register-follow-process (first (vals (:terminals @*term-register*))) 0))
 
 (def message
   (let [inputOutput (GenericData$Record. inputOutputSchema)]

@@ -8,8 +8,8 @@ import (
 
 var InputOutputSchema goavro.RecordSetter
 var InputOutputCodec goavro.Codec
-var TermSizeSchema goavro.RecordSetter
-var TermSizeCodec goavro.Codec
+var ResizeSchema goavro.RecordSetter
+var ResizeCodec goavro.Codec
 var CreateProcessSchema goavro.RecordSetter
 var CreateProcessCodec goavro.Codec
 var AttachToProcessSchema goavro.RecordSetter
@@ -20,7 +20,7 @@ var MessageCodec goavro.Codec
 func LoadAllCodecs() {
 	st := goavro.NewSymtab()
 	InputOutputCodec, InputOutputSchema = LoadCodec(st, "../../../avro/InputOutput.avsc")
-	TermSizeCodec, TermSizeSchema = LoadCodec(st, "../../../avro/TermSize.avsc")
+	ResizeCodec, ResizeSchema = LoadCodec(st, "../../../avro/Resize.avsc")
 	CreateProcessCodec, CreateProcessSchema = LoadCodec(st, "../../../avro/CreateProcess.avsc")
 	AttachToProcessCodec, AttachToProcessSchema = LoadCodec(st, "../../../avro/AttachToProcess.avsc")
 	MessageCodec, MessageSchema = LoadCodec(st, "../../../avro/Message.avsc")
@@ -43,7 +43,7 @@ func LoadCodec(st goavro.Symtab, path string) (goavro.Codec, goavro.RecordSetter
 	return codec, schema
 }
 
-func MakeOutputMessage(data []byte, procId int) *goavro.Record {
+func NewOutputMessage(data []byte, procId int) *goavro.Record {
 	record, err := goavro.NewRecord(MessageSchema)
 	if err != nil {
 		log.Fatal(err)
@@ -57,6 +57,24 @@ func MakeOutputMessage(data []byte, procId int) *goavro.Record {
 	inputOutput.Set("bytes", data)
 	record.Set("messageType", "stdout")
 	record.Set("data", inputOutput)
+
+	return record
+}
+
+func NewProcessCreationMessage(procId int) *goavro.Record {
+	record, err := goavro.NewRecord(MessageSchema)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	createProcess, err := goavro.NewRecord(CreateProcessSchema)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	createProcess.Set("processId", int32(procId))
+	record.Set("messageType", "createProcess")
+	record.Set("data", createProcess)
 
 	return record
 }

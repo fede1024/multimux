@@ -44,7 +44,7 @@ func NewProcess(path string) (*Process, error) {
 	return &Process{path: path, id: -1, tty: tty, command: c, alive: true}, nil
 }
 
-func (proc *Process) Start(path string) error {
+func (proc *Process) Start() error {
 	err := proc.command.Start()
 	if err != nil {
 		return err
