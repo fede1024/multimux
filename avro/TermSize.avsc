@@ -1,0 +1,8 @@
+{"type" : "record",
+ "name" : "TermSize",
+ "namespace": "multimux",
+ "fields" : [ {"name": "processId", "type": "int"},
+              {"name": "cols",     "type": "int"},
+              {"name": "rows",     "type": "int"},
+              {"name": "xpixel",   "type": "int"},
+              {"name": "ypixel",   "type": "int"} ] }

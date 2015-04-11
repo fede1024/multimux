@@ -1,0 +1,5 @@
+{"type" : "record",
+ "name" : "CreateProcess",
+ "namespace": "multimux",
+ "fields" : [ {"name": "path", "type": "string" },
+              {"name": "size", "type": "TermSize" } ] }

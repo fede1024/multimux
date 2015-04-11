@@ -31,7 +31,11 @@ func processInputMessage(msg *goavro.Record, pReg *ProcessRegistry) {
 		bytesRaw, _ := dataRecord.Get("bytes")
 		processIdRaw, _ := dataRecord.Get("processId")
 		processId := int(processIdRaw.(int32))
-		log.Printf("msg for %d out of %d\n", processId, len(pReg.processes))
+
+		if pReg.GetProcess(processId) == nil {
+			log.Printf("Process id %d not valid for stdin command\n", processId)
+			return
+		}
 		if pReg.GetProcess(processId).alive {
 			pReg.GetProcess(processId).stdin <- bytesRaw.([]byte) // TODO: put a select here?
 		}
@@ -44,22 +48,35 @@ func processInputMessage(msg *goavro.Record, pReg *ProcessRegistry) {
 		xpixel, _ := dataRecord.Get("xpixel")
 		ypixel, _ := dataRecord.Get("ypixel")
 
+		if pReg.GetProcess(processId) == nil {
+			log.Printf("Process id %d not valid for resize command\n", processId)
+			return
+		}
 		if pReg.GetProcess(processId).alive {
-			pReg.GetProcess(processId).setSize(cols.(int32), rows.(int32), xpixel.(int32), ypixel.(int32))
+			pReg.GetProcess(processId).SetSize(cols.(int32), rows.(int32), xpixel.(int32), ypixel.(int32))
 		}
-	} else if messageType == "registerToProcess" {
-		processIdRaw, _ := dataRecord.Get("processId")
-		processId := int(processIdRaw.(int32))
+	} else if messageType == "createProcess" {
+		pathRaw, err := dataRecord.Get("path")
+		path := pathRaw.(string)
+		sizeRaw, err := dataRecord.Get("size")
+		size := sizeRaw.(*goavro.Record)
+		cols, _ := size.Get("cols")
+		rows, _ := size.Get("rows")
+		xpixel, _ := size.Get("xpixel")
+		ypixel, _ := size.Get("ypixel")
 
-		if processId < 0 {
-			proc, err := NewProcess("/bin/bash")
-			if err != nil {
-				fmt.Println("Error while starting process:", err)
-				os.Exit(1)
-			}
-			pReg.AddProcess(proc)
-			log.Printf("New process")
+		proc, err := NewProcess(path)
+		if err != nil {
+			log.Println("Error while creating process:", err)
+			os.Exit(1)
 		}
+		proc.SetSize(cols.(int32), rows.(int32), xpixel.(int32), ypixel.(int32))
+		if err = proc.Start("/bin/bash"); err != nil {
+			log.Println("Error while starting process:", err)
+			os.Exit(1)
+		}
+		pReg.AddProcess(proc)
+		log.Printf("New process")
 	} else {
 		log.Printf("Unknown message type: %s", messageType)
 	}

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"github.com/kr/pty"
 	"log"
 	"os"
@@ -9,6 +8,20 @@ import (
 	"syscall"
 	"unsafe"
 )
+
+func openTty(c *exec.Cmd) (ptty *os.File, err error) {
+	ptty, tty, err := pty.Open()
+	if err != nil {
+		return nil, err
+	}
+	//defer tty.Close()
+	c.Stdout = tty
+	c.Stdin = tty
+	c.Stderr = tty
+	c.SysProcAttr = &syscall.SysProcAttr{Setctty: true, Setsid: true}
+
+	return ptty, err
+}
 
 // PROCESS
 
@@ -19,6 +32,33 @@ type Process struct {
 	command       *exec.Cmd
 	stdin, stdout chan []byte
 	alive         bool
+}
+
+func NewProcess(path string) (*Process, error) {
+	c := exec.Command(path)
+	tty, err := openTty(c)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Process{path: path, id: -1, tty: tty, command: c, alive: true}, nil
+}
+
+func (proc *Process) Start(path string) error {
+	err := proc.command.Start()
+	if err != nil {
+		return err
+	}
+
+	proc.stdin = make(chan []byte)
+	proc.stdout = make(chan []byte)
+
+	go proc.ProcessStdinWorker()
+	go proc.ProcessStdoutWorker()
+
+	proc.alive = true
+
+	return nil
 }
 
 func (proc *Process) ProcessStdinWorker() {
@@ -33,7 +73,7 @@ func (proc *Process) ProcessStdinWorker() {
 			panic("Fix here")
 		}
 	}
-	fmt.Println("STDIN END")
+	log.Println("STDIN END")
 }
 
 func (proc *Process) ProcessStdoutWorker() {
@@ -48,7 +88,7 @@ func (proc *Process) ProcessStdoutWorker() {
 
 		proc.stdout <- buf[:reqLen]
 	}
-	fmt.Println("STDOUT END")
+	log.Println("STDOUT END")
 }
 
 func (proc *Process) Terminate() {
@@ -59,6 +99,10 @@ func (proc *Process) Terminate() {
 	}
 }
 
+func (proc *Process) SetSize(row, columns, xpixel, ypixel int32) error {
+	return setTtySize(proc.tty.Fd(), row, columns, xpixel, ypixel)
+}
+
 type winsize struct {
 	ws_row    uint16
 	ws_col    uint16
@@ -66,9 +110,8 @@ type winsize struct {
 	ws_ypixel uint16
 }
 
-func (proc *Process) setSize(rown, columns, xpixel, ypixel int32) error {
+func setTtySize(fd uintptr, rown, columns, xpixel, ypixel int32) error {
 	var ws winsize
-	fd := proc.tty.Fd()
 
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCGWINSZ, uintptr(unsafe.Pointer(&ws)))
 	if errno != 0 {
@@ -108,23 +151,9 @@ func (pr *ProcessRegistry) AddProcess(proc *Process) {
 	}
 }
 
-func NewProcess(path string) (*Process, error) {
-	c := exec.Command(path)
-	f, err := pty.Start(c)
-	if err != nil {
-		return nil, err
-	}
-
-	p := &Process{path: path, id: -1, tty: f, command: c, alive: true}
-	p.stdin = make(chan []byte)
-	p.stdout = make(chan []byte)
-
-	go p.ProcessStdinWorker()
-	go p.ProcessStdoutWorker()
-
-	return p, nil
-}
-
 func (pr *ProcessRegistry) GetProcess(id int) *Process {
-	return pr.processes[id]
+	if id >= 0 && id < len(pr.processes) {
+		return pr.processes[id]
+	}
+	return nil
 }

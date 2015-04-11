@@ -18,35 +18,38 @@
   [channel charset]
   (StringReader. (String. (<!! channel) charset)))
 
-(defn tty-channel-connector [keyboard screen charset]
-  (when (or (not keyboard) (not screen))
+(defn tty-terminal-connector [terminal charset]
+  (when (or (not (:keyboard terminal)) (not (:screen terminal)))
     (throw (Exception. "Channel is null")))
   (let [input-stream (atom (StringReader. ""))]
     (reify com.jediterm.terminal.TtyConnector
       (init [this q]
-        (>!! keyboard [:initialize nil])
+        (>!! (:keyboard terminal) [:initialize nil])
         (when chan true))
       (isConnected [this]
         (when chan true))
       (resize [this term-size pixel-size]
-        (>!! keyboard [:resize [(.width term-size) (.height term-size)
-                                (.width pixel-size) (.height pixel-size)]]))
+        (let [size-vet [(.width term-size) (.height term-size)
+                        (.width pixel-size) (.height pixel-size)]]
+          (reset! (:size-ref terminal) size-vet)
+          (>!! (:keyboard terminal) [:resize size-vet])))
       (read [this buf offset length]
         (let [n (.read @input-stream buf offset length)]
           (if (= n -1)
-            (let [stream (message-to-stream screen charset)]
+            (let [stream (message-to-stream (:screen terminal) charset)]
               (reset! input-stream stream)
               (.read stream buf offset length))
             n)))
       (^void write [this ^bytes buf]
-        (>!! keyboard [:input buf]))
+        (>!! (:keyboard terminal) [:input buf]))
       (^void write [this ^String buf]
-        (>!! keyboard [:input (.getBytes buf charset)]))
+        (>!! (:keyboard terminal) [:input (.getBytes buf charset)]))
       (getName [this] "channelTty")
       (close [this] nil)    ; TODO: fix
       (waitFor [this] 1)))) ; TODO: protocol wait?
 
-(defrecord Terminal [^JediTermWidget widget ^ManyToManyChannel keyboard ^ManyToManyChannel screen])
+(defrecord Terminal [^JediTermWidget widget ^ManyToManyChannel keyboard ^ManyToManyChannel screen
+                    ^clojure.lang.Atom size-ref ^int process-id])
 
 (defn settings-provider []
   (proxy [DefaultSettingsProvider] []
@@ -68,7 +71,9 @@
   (let [term-widget (JediTermWidget. columns rows (settings-provider))
         screen (chan 100)
         keyboard (chan 100)
-        connector (tty-channel-connector keyboard screen (Charset/forName "UTF-8"))
+        size-ref (atom [])
+        terminal (->Terminal term-widget keyboard screen size-ref -1)
+        connector (tty-terminal-connector terminal (Charset/forName "UTF-8"))
         listener (proxy [TerminalPanel$TerminalKeyHandler] [(.getTerminalPanel term-widget)]
                    (keyPressed [event]
                      (when (not (key-listener term-widget event))
@@ -84,7 +89,7 @@
       (when (.init connector nil)
         (.setKeyListener (.getTerminalPanel term-widget) listener)
         (.start (.getTerminalStarter term-widget))))
-    (->Terminal term-widget keyboard screen)))
+    terminal))
 
 ;; Directly connects a tty to a socket, not used
 (defn tty-socket-connector [socket charset]

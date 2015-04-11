@@ -1,4 +1,4 @@
 {"type" : "record",
- "name" : "RegisterToProcess",
+ "name" : "AttachToProcess",
  "namespace": "multimux",
  "fields" : [ {"name": "processId", "type": "int" } ] }
