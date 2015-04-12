@@ -53,7 +53,7 @@ func processInputMessage(msg *goavro.Record, pReg *ProcessRegistry, conn *Connec
 			return
 		}
 		if pReg.GetProcess(processId).alive {
-			pReg.GetProcess(processId).SetSize(cols.(int32), rows.(int32), xpixel.(int32), ypixel.(int32))
+			pReg.GetProcess(processId).SetSize(rows.(int32), cols.(int32), xpixel.(int32), ypixel.(int32))
 		}
 	} else if messageType == "createProcess" {
 		path, err := dataRecord.Get("path")
@@ -67,7 +67,7 @@ func processInputMessage(msg *goavro.Record, pReg *ProcessRegistry, conn *Connec
 			log.Println("Error while creating process:", err)
 			os.Exit(1)
 		}
-		proc.SetSize(cols.(int32), rows.(int32), xpixel.(int32), ypixel.(int32))
+		proc.SetSize(rows.(int32), cols.(int32), xpixel.(int32), ypixel.(int32))
 		if err = proc.Start(); err != nil {
 			log.Println("Error while starting process:", err)
 			os.Exit(1)
@@ -128,7 +128,7 @@ func outputMessagesWorker(pReg *ProcessRegistry, cReg *ConnectionRegistry) {
 				log.Println("New process notified")
 				continue
 			}
-			for _, conn := range cReg.connections {
+			for _, conn := range cReg.connections { // TODO: fiter connections here
 				if conn.alive {
 					conn.sendChan <- NewOutputMessage(value.Interface().([]byte), proc.id)
 				}
@@ -152,6 +152,7 @@ func main() {
 
 	// Listen for incoming connections.
 	listener, err := net.Listen(CONN_TYPE, CONN_HOST+":"+CONN_PORT)
+	//listener, err := net.Listen("unix", "/tmp/mm.sock")
 	if err != nil {
 		fmt.Println("Error listening:", err.Error())
 		os.Exit(1)

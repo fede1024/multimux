@@ -4,9 +4,10 @@
             [taoensso.timbre :as log]
             [clojure.string :as str]
             [clojure.core.async :refer [>!! <!! chan alts!!] :as async])
-  (:import [javax.swing JFrame JScrollBar JPanel JSplitPane SwingUtilities]
+  (:import JMultimuxSplit
+           [javax.swing UIManager BorderFactory JFrame JScrollBar JPanel JSplitPane SwingUtilities]
            [java.awt.event WindowListener KeyEvent KeyListener WindowEvent]
-           [java.awt GridLayout]
+           [java.awt Color]
            [clojure.core.async.impl.channels ManyToManyChannel]
            [com.jediterm.terminal.ui JediTermWidget TerminalPanel$TerminalKeyHandler]
            [java.nio.charset Charset]
@@ -105,7 +106,7 @@
     (create-message "stdin" inputOutput)))
 
 (defn create-resize-message [processId size]
-  (let [[rows cols width height] size
+  (let [[cols rows width height] size
         resize (GenericData$Record. resizeSchema)]
     (.put resize "rows" rows)
     (.put resize "cols" cols)
@@ -119,7 +120,7 @@
     (.put attachToProcess "processId" (int processId))
     (create-message "attachToProcess" attachToProcess)))
 
-(defn create-create-process-message [rows cols width height]
+(defn create-create-process-message [cols rows width height]
   (let [createProcess (GenericData$Record. createProcessSchema)]
     (.put createProcess "rows" rows)
     (.put createProcess "cols" cols)
@@ -146,6 +147,8 @@
 ;           msg-read-chan (>!! stdin (decode-term-data data))
 ;           stdout        (>!! msg-write-chan (handle-term-write data)))
 ;         (recur (alts!! channels))))))
+
+(def register-follow-process) ;; TODO: remove
 
 (defn incoming-message-handler [message chan term-register]
   (condp = (:message-type message)
@@ -199,7 +202,8 @@
   (let [orientation (if (= direction :vertical)
                       JSplitPane/HORIZONTAL_SPLIT
                       JSplitPane/VERTICAL_SPLIT)
-        split (JSplitPane. orientation true old-term-widget new-term-widget)]
+        [w h] (term/get-font-size)
+        split (JMultimuxSplit. orientation old-term-widget new-term-widget w h)]
     (.remove panel old-term-widget)
     (.add panel split)
     (.setResizeWeight split 0.5)
@@ -209,7 +213,8 @@
   (let [orientation (if (= direction :vertical)
                       JSplitPane/HORIZONTAL_SPLIT
                       JSplitPane/VERTICAL_SPLIT)
-        new-split (JSplitPane. orientation true old-term-widget new-term-widget)]
+        [w h] (term/get-font-size)
+        new-split (JMultimuxSplit. orientation old-term-widget new-term-widget w h)]
     (.remove splitpane old-term-widget)
     (if (= (.getOrientation splitpane) JSplitPane/HORIZONTAL_SPLIT)
       (if (.getLeftComponent splitpane)
@@ -238,7 +243,8 @@
         container (.getParent term-widget)]
     (condp = (type container)
       javax.swing.JPanel (split-panel direction container term-widget (:widget new-terminal))
-      javax.swing.JSplitPane (split-splitpane direction container term-widget (:widget new-terminal)))
+      ;javax.swing.JSplitPane (split-splitpane direction container term-widget (:widget new-terminal))
+      JMultimuxSplit (split-splitpane direction container term-widget (:widget new-terminal)))
     (.requestFocus (.getTerminalPanel (:widget new-terminal))))
   new-terminal)
 
@@ -297,6 +303,10 @@
   (BasicConfigurator/configure)
   (.setLevel (Logger/getRootLogger) (Level/INFO))
   (configure-logger!)
+  (.put (UIManager/getDefaults) "SplitPane.border", (BorderFactory/createEmptyBorder))
+  (UIManager/put "SplitDivider.background", (Color. 6 26 39))
+  (UIManager/put "SplitDivider.foreground", (Color. 96 109 117))
+  ;(UIManager/setLookAndFeel (UIManager/getSystemLookAndFeelClassName))
   (dosync (ref-set *term-register* (create-term-register)))
   (if-let [connection (create-connection {:host "localhost" :port 3333})]
     (let [msg-read-chan (chan 100)

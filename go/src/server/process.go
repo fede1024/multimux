@@ -110,7 +110,7 @@ type winsize struct {
 	ws_ypixel uint16
 }
 
-func setTtySize(fd uintptr, rown, columns, xpixel, ypixel int32) error {
+func setTtySize(fd uintptr, rows, columns, xpixel, ypixel int32) error {
 	var ws winsize
 
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TIOCGWINSZ, uintptr(unsafe.Pointer(&ws)))
@@ -119,7 +119,7 @@ func setTtySize(fd uintptr, rown, columns, xpixel, ypixel int32) error {
 	}
 
 	ws.ws_col = uint16(columns)
-	ws.ws_row = uint16(rown)
+	ws.ws_row = uint16(rows)
 	ws.ws_xpixel = uint16(xpixel)
 	ws.ws_ypixel = uint16(ypixel)
 

@@ -4,6 +4,7 @@
            [java.io InputStreamReader StringReader]
            [clojure.core.async.impl.channels ManyToManyChannel]
            [java.awt Font]
+           [java.awt.image BufferedImage]
            [com.jediterm.terminal TerminalMode TerminalColor TextStyle]
            [com.jediterm.terminal.ui JediTermWidget TerminalPanel$TerminalKeyHandler]
            [com.jediterm.terminal.ui.settings DefaultSettingsProvider]))
@@ -91,6 +92,14 @@
 (defn get-term-size [terminal]
   (let [panel (.getTerminalPanel (:widget terminal))]
     [(.getColumnCount panel) (.getRowCount panel) (.getPixelWidth panel) (.getPixelHeight panel)]))
+
+(defn get-font-size []
+  (let [settings (settings-provider)
+        font (.getTerminalFont settings)
+        linespace (.getLineSpace settings)
+        graphics (.createGraphics (BufferedImage. 1 1 BufferedImage/TYPE_INT_RGB))
+        metrics (.getFontMetrics graphics font)]
+    [(.charWidth metrics \W) (+ (.getHeight metrics) (* linespace 2))]))
 
 ;; Directly connects a tty to a socket, not used
 (defn tty-socket-connector [socket charset]
