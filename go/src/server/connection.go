@@ -82,6 +82,11 @@ func (c *Connection) UnfollowProcess(proc *Process) {
 	c.processes[proc.id] = false
 }
 
+func (c *Connection) IsFollowing(proc *Process) bool {
+	val, found := c.processes[proc.id]
+	return found && val
+}
+
 // CONNECTION REGISTRY
 
 type ConnectionRegistry struct {

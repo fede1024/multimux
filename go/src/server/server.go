@@ -75,7 +75,8 @@ func processInputMessage(msg *goavro.Record, pReg *ProcessRegistry, conn *Connec
 		pReg.AddProcess(proc)
 		log.Printf("New process")
 
-		conn.sendChan <- NewProcessCreationMessage(proc.id)
+		conn.sendChan <- NewProcessCreationMessage(proc.id) // Notifies the sender that the process is up
+		conn.FollowProcess(proc)                            // Register the connection as follower
 	} else {
 		log.Printf("Unknown message type: %s", messageType)
 	}
@@ -96,8 +97,7 @@ func inputMessagesWorker(pReg *ProcessRegistry, cReg *ConnectionRegistry) {
 		chosen, value, ok := reflect.Select(cases)
 		if ok == true {
 			if chosen == 0 {
-				log.Println("New connection notified")
-				continue
+				continue // New connection added
 			}
 			processInputMessage(value.Interface().(*goavro.Record), pReg, caseToConnection[chosen])
 		} else {
@@ -125,11 +125,10 @@ func outputMessagesWorker(pReg *ProcessRegistry, cReg *ConnectionRegistry) {
 		proc := caseToProcess[chosen]
 		if ok == true {
 			if chosen == 0 {
-				log.Println("New process notified")
-				continue
+				continue // New process added
 			}
-			for _, conn := range cReg.connections { // TODO: fiter connections here
-				if conn.alive {
+			for _, conn := range cReg.connections {
+				if conn.alive && conn.IsFollowing(proc) {
 					conn.sendChan <- NewOutputMessage(value.Interface().([]byte), proc.id)
 				}
 			}

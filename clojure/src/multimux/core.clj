@@ -1,6 +1,7 @@
 (ns multimux.core
   (:gen-class)
   (:require [multimux.terminal :as term]
+            [multimux.serialize :as ser]
             [taoensso.timbre :as log]
             [clojure.string :as str]
             [clojure.core.async :refer [>!! <!! chan alts!!] :as async])
@@ -11,7 +12,6 @@
            [clojure.core.async.impl.channels ManyToManyChannel]
            [com.jediterm.terminal.ui JediTermWidget TerminalPanel$TerminalKeyHandler]
            [java.nio.charset Charset]
-           [java.nio CharBuffer ByteBuffer]
            [java.io File InputStreamReader ByteArrayOutputStream FileOutputStream]
            [java.net Socket]
            [java.util Arrays]
@@ -38,116 +38,6 @@
       (log/warn "Connection failure" e)
       nil)))
 
-(def parser (Schema$Parser.))
-
-(def inputOutputSchema (.parse parser (File. "../avro/InputOutput.avsc")))
-(def resizeSchema (.parse parser (File. "../avro/Resize.avsc")))
-(def createProcessSchema (.parse parser (File. "../avro/CreateProcess.avsc")))
-(def attachToProcessSchema (.parse parser (File. "../avro/AttachToProcess.avsc")))
-(def messageSchema (.parse parser (File. "../avro/Message.avsc")))
-
-(defn socket-to-chan [server readChan writeChan]
-  (let [socket (create-connection server)
-        inputStream (.getInputStream socket)
-        outputStream (.getOutputStream socket)]
-    (async/thread    ; Reading thread
-      (let [buf (make-array Byte/TYPE 1024)]
-        (loop [bytesIn (.read inputStream buf)]
-          (when (not (= bytesIn -1)) ; TODO: check closed channel?
-            (let [data (make-array Byte/TYPE bytesIn)]
-              (System/arraycopy buf 0 data 0 bytesIn)
-              (>!! readChan data))
-            (recur (.read inputStream buf))))))
-    (async/thread    ; Writing thread
-      (loop [data (<!! writeChan)]
-        (when data
-          (.write outputStream data)
-          (recur (<!! writeChan)))))))
-
-(defn msg-connection [socket msg-read-chan msg-write-chan]
-  (when (not socket)
-    (throw (Exception. "Socket is nil")))
-  (async/thread
-    (try
-      (let [in (.getInputStream socket)
-            reader (GenericDatumReader. messageSchema)
-            decoder (.directBinaryDecoder (DecoderFactory/get) in nil)]
-        (loop [msg (.read reader nil decoder)]
-          (>!! msg-read-chan msg)
-          (recur (.read reader nil decoder))))
-      (catch java.io.EOFException e
-        (log/warn "Socket exception" e))
-      (catch java.net.SocketException e
-        (log/warn "Socket exception" e))))
-  (async/thread
-    (try
-      (let [out (.getOutputStream socket)
-            writer (GenericDatumWriter. messageSchema)
-            encoder (.binaryEncoder (EncoderFactory/get) out nil)]
-        (loop [msg (<!! msg-write-chan)]
-          (.write writer msg encoder)
-          (.flush encoder)
-          (recur (<!! msg-write-chan))))
-      (catch java.io.EOFException e
-        (log/warn "Interrupted stream" e))
-      (catch java.net.SocketException e
-        (log/warn "Socket exception" e)))))
-
-(defn create-message [messageType data]
-  (let [message (GenericData$Record. messageSchema)]
-    (.put message "messageType" messageType)
-    (.put message "data" data)
-    message))
-
-(defn create-stdin-message [processId bytes]
-  (let [inputOutput (GenericData$Record. inputOutputSchema)]
-    (.put inputOutput "processId" (int processId))
-    (.put inputOutput "bytes" (ByteBuffer/wrap bytes))
-    (create-message "stdin" inputOutput)))
-
-(defn create-resize-message [processId size]
-  (let [[cols rows width height] size
-        resize (GenericData$Record. resizeSchema)]
-    (.put resize "rows" rows)
-    (.put resize "cols" cols)
-    (.put resize "xpixel" width)
-    (.put resize "ypixel" height)
-    (.put resize "processId" (int processId))
-    (create-message "resize" resize)))
-
-(defn create-attach-to-process-message [processId]
-  (let [attachToProcess (GenericData$Record. attachToProcessSchema)]
-    (.put attachToProcess "processId" (int processId))
-    (create-message "attachToProcess" attachToProcess)))
-
-(defn create-create-process-message [cols rows width height]
-  (let [createProcess (GenericData$Record. createProcessSchema)]
-    (.put createProcess "rows" rows)
-    (.put createProcess "cols" cols)
-    (.put createProcess "xpixel" width)
-    (.put createProcess "ypixel" height)
-    (.put createProcess "processId" -1)
-    (.put createProcess "path" "/bin/bash")
-    (create-message "createProcess" createProcess)))
-
-(defn decode-message [^GenericData$Record message]
-  (let [message-type (keyword (str (.get message "messageType")))
-        ^GenericData$Record payload (.get message "data")]
-    (merge {:message-type message-type}
-           (condp = message-type
-             :stdout {:process-id (int (.get payload "processId")) :bytes (.array (.get payload "bytes"))}
-             :createProcess {:process-id (int (.get payload "processId"))}
-             (log/error "Unknown message type" message-type)))))
-
-; (defn message-handler [msg-read-chan msg-write-chan stdin stdout]
-;   (async/thread
-;     (let [channels [msg-read-chan stdout]]
-;       (loop [[data chan] (alts!! channels)]
-;         (condp = chan
-;           msg-read-chan (>!! stdin (decode-term-data data))
-;           stdout        (>!! msg-write-chan (handle-term-write data)))
-;         (recur (alts!! channels))))))
-
 (def register-follow-process) ;; TODO: remove
 
 (defn incoming-message-handler [message chan term-register]
@@ -162,14 +52,15 @@
 
 (defn term-write-handler [[input-type payload] keyboard-chan term-register msg-write-handler]
   (let [term (get (:terminals @term-register) keyboard-chan)]
+    (println '>>> term)
     (if (>= (:process-id term) 0)
       (let [message (condp = input-type
-                      :input (create-stdin-message (:process-id term) payload)
-                      :resize (create-resize-message (:process-id term) payload)
+                      :input (ser/create-stdin-message (:process-id term) payload)
+                      :resize (ser/create-resize-message (:process-id term) payload)
                       :initialize (log/error "Terminal is already initialized"))]
         (when message (>!! msg-write-handler message)))
       (if (= input-type :initialize)
-        (>!! msg-write-handler (apply create-create-process-message (term/get-term-size term)))
+        (>!! msg-write-handler (apply ser/create-create-process-message (term/get-term-size term)))
         (log/warn "No process id associated to message" input-type)))))
 
 (defn message-handler [msg-read-chan msg-write-chan term-register]
@@ -177,7 +68,7 @@
     (loop []
       (let [[data chan] (alts!! (conj (keys (:terminals @term-register)) msg-read-chan))]
         (if (= chan msg-read-chan)
-          (incoming-message-handler (decode-message data) chan term-register)
+          (incoming-message-handler (ser/decode-message data) chan term-register)
           (term-write-handler data chan term-register msg-write-chan)))
       (recur))))
 
@@ -251,12 +142,12 @@
 (defn close-jframe [frame]
   (.dispatchEvent frame (WindowEvent. frame WindowEvent/WINDOW_CLOSING)))
 
-(def ^:dynamic *term-register* (ref nil))
-
 (defrecord TermRegister [terminals followers])
 
 (defn create-term-register []
   (->TermRegister {} {}))
+
+(def ^:dynamic *term-register* (ref (create-term-register)))
 
 (defn add-term-to-register [register terminal]
   (assoc-in register [:terminals (:keyboard terminal)] terminal))
@@ -307,72 +198,11 @@
   (UIManager/put "SplitDivider.background", (Color. 6 26 39))
   (UIManager/put "SplitDivider.foreground", (Color. 96 109 117))
   ;(UIManager/setLookAndFeel (UIManager/getSystemLookAndFeelClassName))
-  (dosync (ref-set *term-register* (create-term-register)))
   (if-let [connection (create-connection {:host "localhost" :port 3333})]
     (let [msg-read-chan (chan 100)
           msg-write-chan (chan 100)]
       (create-and-show-frame "Multimux" #(when connection (.close connection)))
-      (msg-connection connection msg-read-chan msg-write-chan)
+      (ser/message-to-socket-worker connection msg-read-chan msg-write-chan)
       (message-handler msg-read-chan msg-write-chan *term-register*))
     (log/error "Connection not established"))
   (log/info "GUI started"))
-
-(def message
-  (let [inputOutput (GenericData$Record. inputOutputSchema)]
-    (.put inputOutput "bytes" (ByteBuffer/wrap (.getBytes "date\n" (Charset/forName "UTF-8"))))
-    (.put inputOutput "processId" (int 1234))
-    (create-message "stdin" inputOutput)))
-
-(let [out (ByteArrayOutputStream.)
-      writer (GenericDatumWriter. messageSchema)
-      encoder (.binaryEncoder (EncoderFactory/get) out nil)
-      file (FileOutputStream. "message.avro")]
-  (.write writer message encoder)
-  ;(.put message "messageType" "output")
-  ;(.write writer message encoder)
-  (.flush encoder)
-  (.write file (.toByteArray out)))
-
-(def tsocket (atom nil))
-
-(defn test-read []
-  (let [socket (create-connection {:host "localhost" :port 3333})
-        in (.getInputStream socket)
-        reader (GenericDatumReader. messageSchema)
-        decoder (.directBinaryDecoder (DecoderFactory/get) in nil)]
-    (reset! tsocket socket)
-    (.read reader nil decoder)
-    (println 'lettooo)
-    (.read reader nil decoder)
-    (println 'lettooo)
-    (.read reader nil decoder)
-    (println 'lettooo)))
-
-; (let [socket (create-connection {:host "localhost" :port 3333})
-;       in (.getInputStream socket)
-;       stream (DataFileStream. (.getInputStream socket) (GenericDatumReader. messageSchema))]
-;   messageSchema
-;   )
-
-(defn test-write []
-  (let [out (.getOutputStream @tsocket)
-        writer (GenericDatumWriter. messageSchema)
-        encoder (.binaryEncoder (EncoderFactory/get) out nil)]
-    (.write writer message encoder)
-    (.flush encoder)))
-
-; (test-write)
-
-; (let [writer (DataFileWriter. (GenericDatumWriter. messageSchema))
-;       file (File. "users.avro")]
-;   (.create writer messageSchema file)
-;   (.append writer user)
-;   (.put user "ciao" "carletto")
-;   (.append writer user)
-;   (.close writer))
-;
-; (let [file (File. "users.avro")
-;       reader (DataFileReader. file (GenericDatumReader. messageSchema))]
-;   (for [user reader]
-;     [(.get user "ciao") (.get user "favorite_number")]))
-

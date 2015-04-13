@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -31,6 +32,7 @@ type Process struct {
 	tty           *os.File
 	command       *exec.Cmd
 	stdin, stdout chan []byte
+	terminate     chan bool
 	alive         bool
 }
 
@@ -52,21 +54,26 @@ func (proc *Process) Start() error {
 
 	proc.stdin = make(chan []byte)
 	proc.stdout = make(chan []byte)
+	proc.terminate = make(chan bool)
 
-	go proc.ProcessStdinWorker()
-	go proc.ProcessStdoutWorker()
+	go proc.StdinWorker()
+	go proc.StdoutWorker()
+	go proc.TerminationWorker()
 
 	proc.alive = true
 
 	return nil
 }
 
-func (proc *Process) ProcessStdinWorker() {
+func (proc *Process) StdinWorker() {
 	for input := range proc.stdin {
 		nw, err := proc.tty.Write(input)
 		if err != nil {
 			log.Println(err)
-			proc.Terminate()
+			select {
+			case proc.terminate <- true:
+			default:
+			}
 			break
 		}
 		if len(input) != nw {
@@ -76,13 +83,16 @@ func (proc *Process) ProcessStdinWorker() {
 	log.Println("STDIN END")
 }
 
-func (proc *Process) ProcessStdoutWorker() {
+func (proc *Process) StdoutWorker() {
 	for {
 		buf := make([]byte, 1024)
 		reqLen, err := proc.tty.Read(buf)
 		if err != nil {
 			log.Println(err)
-			proc.Terminate()
+			select {
+			case proc.terminate <- true:
+			default:
+			}
 			break
 		}
 
@@ -91,11 +101,43 @@ func (proc *Process) ProcessStdoutWorker() {
 	log.Println("STDOUT END")
 }
 
-func (proc *Process) Terminate() {
-	if proc.alive {
-		close(proc.stdin)
-		close(proc.stdout)
-		proc.alive = false
+func (proc *Process) TerminationWorker() {
+	done := make(chan error, 1)
+	go func() {
+		done <- proc.command.Wait()
+	}()
+
+	select {
+	case <-proc.terminate:
+		waitAndKill(proc.command)
+	case <-done:
+		// Process already terminated
+	}
+
+	proc.alive = false
+	close(proc.stdin)
+	close(proc.stdout)
+	close(proc.terminate)
+	proc.tty.Close()
+	log.Println("Process teminated")
+}
+
+func waitAndKill(cmd *exec.Cmd) {
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	select {
+	case <-time.After(3 * time.Second):
+		if err := cmd.Process.Kill(); err != nil {
+			log.Fatal("Failed to kill: ", err)
+		}
+		<-done // allow goroutine to exit
+		log.Println("Process killed")
+	case err := <-done:
+		if err != nil {
+			log.Printf("process done with error = %v", err)
+		}
 	}
 }
 
