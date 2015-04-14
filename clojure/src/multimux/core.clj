@@ -2,6 +2,7 @@
   (:gen-class)
   (:require [multimux.terminal :as term]
             [multimux.serialize :as ser]
+            [multimux.connection :as conn]
             [taoensso.timbre :as log]
             [clojure.string :as str]
             [clojure.core.async :refer [>!! <!! chan alts!!] :as async])
@@ -13,7 +14,6 @@
            [com.jediterm.terminal.ui JediTermWidget TerminalPanel$TerminalKeyHandler]
            [java.nio.charset Charset]
            [java.io File InputStreamReader ByteArrayOutputStream FileOutputStream]
-           [java.net Socket]
            [java.util Arrays]
            [org.apache.log4j BasicConfigurator Level Logger]
            [org.apache.avro.generic GenericData$Record GenericData$EnumSymbol GenericDatumWriter GenericDatumReader]
@@ -31,13 +31,6 @@
                               timestamp (-> level name str/upper-case) ns (or message "")
                               (or (log/stacktrace throwable "\n" (when nofonts? {})) "")))}))
 
-(defn create-connection [server]
-  (try
-    (Socket. (:host server) (:port server))
-    (catch java.net.ConnectException e
-      (log/warn "Connection failure" e)
-      nil)))
-
 (def register-follow-process) ;; TODO: remove
 
 (defn incoming-message-handler [message chan term-register]
@@ -52,7 +45,6 @@
 
 (defn term-write-handler [[input-type payload] keyboard-chan term-register msg-write-handler]
   (let [term (get (:terminals @term-register) keyboard-chan)]
-    (println '>>> term)
     (if (>= (:process-id term) 0)
       (let [message (condp = input-type
                       :input (ser/create-stdin-message (:process-id term) payload)
@@ -198,11 +190,11 @@
   (UIManager/put "SplitDivider.background", (Color. 6 26 39))
   (UIManager/put "SplitDivider.foreground", (Color. 96 109 117))
   ;(UIManager/setLookAndFeel (UIManager/getSystemLookAndFeelClassName))
-  (if-let [connection (create-connection {:host "localhost" :port 3333})]
+  (if-let [connection (conn/open (conn/create-socket-connection "localhost" 3333))]
     (let [msg-read-chan (chan 100)
           msg-write-chan (chan 100)]
-      (create-and-show-frame "Multimux" #(when connection (.close connection)))
-      (ser/message-to-socket-worker connection msg-read-chan msg-write-chan)
+      (create-and-show-frame "Multimux" #(when connection (conn/close connection)))
+      (ser/message-to-connection-worker connection msg-read-chan msg-write-chan)
       (message-handler msg-read-chan msg-write-chan *term-register*))
     (log/error "Connection not established"))
   (log/info "GUI started"))

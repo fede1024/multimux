@@ -1,5 +1,6 @@
 (ns multimux.serialize
-  (:require [taoensso.timbre :as log]
+  (:require [multimux.connection :as conn]
+            [taoensso.timbre :as log]
             [clojure.core.async :refer [>!! <!! chan alts!!] :as async])
   (:import [java.io File InputStreamReader]
            [java.nio ByteBuffer]
@@ -15,12 +16,12 @@
 (def attachToProcessSchema (.parse parser (File. "../avro/AttachToProcess.avsc")))
 (def messageSchema (.parse parser (File. "../avro/Message.avsc")))
 
-(defn message-to-socket-worker [socket msg-read-chan msg-write-chan]
-  (when (not socket)
+(defn message-to-connection-worker [connection msg-read-chan msg-write-chan]
+  (when (not connection)
     (throw (Exception. "Socket is nil")))
   (async/thread
     (try
-      (let [in (.getInputStream socket)
+      (let [in (conn/input-stream connection)
             reader (GenericDatumReader. messageSchema)
             decoder (.directBinaryDecoder (DecoderFactory/get) in nil)]
         (loop [msg (.read reader nil decoder)]
@@ -32,7 +33,7 @@
         (log/warn "Socket exception" e))))
   (async/thread
     (try
-      (let [out (.getOutputStream socket)
+      (let [out (conn/output-stream connection)
             writer (GenericDatumWriter. messageSchema)
             encoder (.binaryEncoder (EncoderFactory/get) out nil)]
         (loop [msg (<!! msg-write-chan)]
