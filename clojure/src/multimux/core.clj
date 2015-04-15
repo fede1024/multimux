@@ -190,11 +190,14 @@
   (UIManager/put "SplitDivider.background", (Color. 6 26 39))
   (UIManager/put "SplitDivider.foreground", (Color. 96 109 117))
   ;(UIManager/setLookAndFeel (UIManager/getSystemLookAndFeelClassName))
-  (if-let [connection (conn/open (conn/create-socket-connection "localhost" 3333))]
-    (let [msg-read-chan (chan 100)
-          msg-write-chan (chan 100)]
-      (create-and-show-frame "Multimux" #(when connection (conn/close connection)))
-      (ser/message-to-connection-worker connection msg-read-chan msg-write-chan)
-      (message-handler msg-read-chan msg-write-chan *term-register*))
-    (log/error "Connection not established"))
-  (log/info "GUI started"))
+  (if (not (System/getenv "TEST_PWD"))
+    (log/error "Missing password")
+    (if-let [;connection (conn/open (conn/create-socket-connection "localhost" 3333))
+             connection (conn/open (conn/create-ssh-unix-connection "fede" (System/getenv "TEST_PWD") "localhost"))]
+      (let [msg-read-chan (chan 100)
+            msg-write-chan (chan 100)]
+        (create-and-show-frame "Multimux" #(when connection (conn/close connection)))
+        (log/info "GUI started")
+        (ser/message-to-connection-worker connection msg-read-chan msg-write-chan)
+        (message-handler msg-read-chan msg-write-chan *term-register*))
+      (log/error "Connection not established"))))

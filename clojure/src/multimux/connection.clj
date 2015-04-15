@@ -1,7 +1,9 @@
 (ns multimux.connection
-  (:require [taoensso.timbre :as log])
-  (:import [java.net Socket]
-           [java.io FileInputStream InputStreamReader FileOutputStream BufferedReader]
+  (:require [taoensso.timbre :as log]
+            [clojure.core.async :as async])
+  (:import [com.jcraft.jsch JSch JSchException Session Channel]
+           [java.net Socket]
+           [java.io OutputStream InputStream BufferedReader InputStreamReader]
            [java.lang Process ProcessBuilder ProcessBuilder$Redirect]))
 
 (defprotocol ConnectionProtocol
@@ -41,21 +43,70 @@
    :input-stream get-socket-connection-input-stream
    :output-stream get-socket-connection-output-stream})
 
+
 ;; Connection over ssh to a unix socket
-(defrecord SSHUnixConnection [^String username ^String host ^String unix-path ^Process proc])
+(defrecord SSHUnixConnection [^String username ^String password ^String host ^Session session
+                              ^Channel channel ^OutputStream output-stream ^InputStream input-stream
+                              ^InputStream error-stream])
 
-(defn ssh-command [username host unix-path]
-  ["ssh" "-f" (str username "@" host) "socat" "STDIO" (str "UNIX-CONNECT:" unix-path)]
-  ["ssh" "fede@localhost" "echo ciaoooiojoij"]
-  )
+(def jsch (JSch.))
+(def unix-socket-path "/tmp/mm.sock")
+(def socat-command (str "socat STDIO UNIX-CONNECT:" unix-socket-path))
 
-(defn create-ssh-unix-connection [username host unix-path]
-  (let [pb (ProcessBuilder. (ssh-command username host unix-path))]
-    (.redirectOutput pb ProcessBuilder$Redirect/PIPE)
-    (.redirectInput pb ProcessBuilder$Redirect/PIPE)
-    (.redirectError pb ProcessBuilder$Redirect/PIPE)
-    ;(.redirectErrorStream pb true)
+(defn create-ssh-session [username password host & {:keys [host-key user-info]}]
+  (let [session (.getSession jsch username host)
+        known-host-repository (.getHostKeyRepository session)]
+    (when host-key
+      (.add known-host-repository host-key user-info))
+    (.setPassword session password)
     (try
-      (.start pb)
-      (catch java.io.IOException e
-        (log/warn "Connection failure" e)))))
+      (.connect session 20000)
+      session
+      (catch JSchException e
+        (if-let [cause (.getCause e)]
+          (throw cause)
+          (when (and (.startsWith (.getMessage e) "UnknownHostKey") (not host-key) (not user-info))
+            (log/warn "Adding ssh host key for" (.getHost session))
+            (create-ssh-session username password host :host-key (.getHostKey session)
+                                :user-info (.getUserInfo session))))))))
+
+(defn ssh-exec-channel [session command]
+  (let [channel (.openChannel session "exec")
+        input-stream (.getInputStream channel)
+        output-stream (.getOutputStream channel)
+        error-stream (.getErrStream channel)]
+    (async/thread
+      (let [reader (BufferedReader. (InputStreamReader. error-stream))]
+        (loop []
+          (when-let [line (.readLine reader)]
+            (log/warn "SSH stderr:" line)
+            (recur)))))
+    (.setCommand channel command)
+    (.connect channel)
+    [channel input-stream output-stream error-stream]))
+
+(defn create-ssh-unix-connection [username password host]
+  (->SSHUnixConnection username password host nil nil nil nil nil))
+
+(defn open-ssh-unix-connection [conn]
+  (let [session (create-ssh-session (:username conn) (:password conn) (:host conn))
+        [channel input output error] (ssh-exec-channel session socat-command)]
+    ;; TODO: add protocol message to check for connection
+    (assoc conn :session session :channel channel :input-stream input :output-stream output :error-stream error)))
+
+(defn close-ssh-unix-connection [conn]
+  (.disconnect (:channel conn))
+  (.disconnect (:session conn)))
+
+(defn get-ssh-unix-connection-input-stream [conn]
+  (:input-stream conn))
+
+(defn get-ssh-unix-connection-output-stream [conn]
+  (:output-stream conn))
+
+(extend SSHUnixConnection
+  ConnectionProtocol
+  {:open open-ssh-unix-connection
+   :close close-ssh-unix-connection
+   :input-stream get-ssh-unix-connection-input-stream
+   :output-stream get-ssh-unix-connection-output-stream})

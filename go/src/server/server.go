@@ -150,8 +150,8 @@ func main() {
 	LoadAllCodecs()
 
 	// Listen for incoming connections.
-	listener, err := net.Listen(CONN_TYPE, CONN_HOST+":"+CONN_PORT)
-	//listener, err := net.Listen("unix", "/tmp/mm.sock")
+	//listener, err := net.Listen(CONN_TYPE, CONN_HOST+":"+CONN_PORT)
+	listener, err := net.Listen("unix", "/tmp/mm.sock")
 	if err != nil {
 		fmt.Println("Error listening:", err.Error())
 		os.Exit(1)
