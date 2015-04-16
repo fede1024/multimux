@@ -6,8 +6,7 @@
             [taoensso.timbre :as log]
             [clojure.string :as str]
             [clojure.core.async :refer [>!! <!! chan alts!!] :as async])
-  (:import JMultimuxSplit
-           [javax.swing UIManager BorderFactory JFrame JScrollBar JPanel JSplitPane SwingUtilities]
+  (:import [javax.swing UIManager JFrame JScrollBar SwingUtilities]
            [java.awt.event WindowListener KeyEvent KeyListener WindowEvent]
            [java.awt Color]
            [clojure.core.async.impl.channels ManyToManyChannel]
@@ -31,15 +30,13 @@
                               timestamp (-> level name str/upper-case) ns (or message "")
                               (or (log/stacktrace throwable "\n" (when nofonts? {})) "")))}))
 
-(def register-follow-process) ;; TODO: remove
-
 (defn incoming-message-handler [message chan term-register]
   (condp = (:message-type message)
     :stdout (doseq [term (get-in @term-register [:followers (:process-id message)])]
               (>!! (:screen term) (:bytes message)))
     :createProcess (let [term (first (filter #(= (:process-id %) -1) (vals (:terminals @term-register))))]
                      (if term
-                       (dosync (alter term-register register-follow-process term (:process-id message)))
+                       (dosync (alter term-register term/register-follow-process term (:process-id message)))
                        (log/error "Received process creation feedback, but no unattached terminal is present")))
     (log/error "Unknown message type" (:message-type message))))
 
@@ -81,86 +78,23 @@
 ;     (sizeUpdated [width height cursorY]
 ;       (log/info "Terminal resized" width height cursorY))))
 
-(defn split-panel [direction panel old-term-widget new-term-widget]
-  (let [orientation (if (= direction :vertical)
-                      JSplitPane/HORIZONTAL_SPLIT
-                      JSplitPane/VERTICAL_SPLIT)
-        [w h] (term/get-font-size)
-        split (JMultimuxSplit. orientation old-term-widget new-term-widget w h)]
-    (.remove panel old-term-widget)
-    (.add panel split)
-    (.setResizeWeight split 0.5)
-    (.revalidate panel)))
 
-(defn split-splitpane [direction splitpane old-term-widget new-term-widget]
-  (let [orientation (if (= direction :vertical)
-                      JSplitPane/HORIZONTAL_SPLIT
-                      JSplitPane/VERTICAL_SPLIT)
-        [w h] (term/get-font-size)
-        new-split (JMultimuxSplit. orientation old-term-widget new-term-widget w h)]
-    (.remove splitpane old-term-widget)
-    (if (= (.getOrientation splitpane) JSplitPane/HORIZONTAL_SPLIT)
-      (if (.getLeftComponent splitpane)
-        (.setRightComponent splitpane new-split)
-        (.setLeftComponent splitpane new-split))
-      (if (.getTopComponent splitpane)
-        (.setBottomComponent splitpane new-split)
-        (.setTopComponent splitpane new-split)))
-    (.setResizeWeight new-split 0.5)))
-
-; (defn split [direction new-term]
-;   {:pre [(direction #{:vertical :horizontal})]}
-;   (if (not @frame)
-;     (log/warn "No frame, nothing to split")
-;     (let [term-panel (get-focused-term-panel @frame)
-;           term-widget (.getParent term-panel)
-;           container (.getParent term-widget)]
-;       (condp = (type container)
-;         javax.swing.JPanel (split-panel direction container term-widget new-term)
-;         javax.swing.JSplitPane (split-splitpane direction container term-widget new-term))
-;       (.requestFocus (.getTerminalPanel new-term)))))
-
-(defn split-term [term-widget direction new-terminal]
-  {:pre [(direction #{:vertical :horizontal})]}
-  (let [term-panel (.getTerminalPanel term-widget)
-        container (.getParent term-widget)]
-    (condp = (type container)
-      javax.swing.JPanel (split-panel direction container term-widget (:widget new-terminal))
-      ;javax.swing.JSplitPane (split-splitpane direction container term-widget (:widget new-terminal))
-      JMultimuxSplit (split-splitpane direction container term-widget (:widget new-terminal)))
-    (.requestFocus (.getTerminalPanel (:widget new-terminal))))
-  new-terminal)
+(def ^:dynamic *term-register* (ref (term/create-term-register)))
 
 (defn close-jframe [frame]
   (.dispatchEvent frame (WindowEvent. frame WindowEvent/WINDOW_CLOSING)))
 
-(defrecord TermRegister [terminals followers])
-
-(defn create-term-register []
-  (->TermRegister {} {}))
-
-(def ^:dynamic *term-register* (ref (create-term-register)))
-
-(defn add-term-to-register [register terminal]
-  (assoc-in register [:terminals (:keyboard terminal)] terminal))
-
-(defn register-follow-process [register terminal process-id]
-  (let [term (assoc terminal :process-id process-id)]
-   (-> register
-      (update-in [:followers process-id] #(if % (conj % term) #{term}))
-      (assoc-in [:terminals (:keyboard terminal)] term))))
-
 (defn create-terminal-and-process [columns rows key-listener]
   (let [terminal (term/create-term columns rows key-listener)]
-    (dosync (alter *term-register* add-term-to-register terminal))
+    (dosync (alter *term-register* term/add-term-to-register terminal))
     terminal))
 
 (defn term-key-listener [term-widget event]
   (let [keyCode (.getKeyCode event)]
     (when (.isAltDown event)
       (condp = keyCode
-        KeyEvent/VK_H (split-term term-widget :horizontal (create-terminal-and-process 80 24 term-key-listener))
-        KeyEvent/VK_V (split-term term-widget :vertical (create-terminal-and-process 80 24 term-key-listener))
+        KeyEvent/VK_H (term/split term-widget :horizontal (create-terminal-and-process 80 24 term-key-listener))
+        KeyEvent/VK_V (term/split term-widget :vertical (create-terminal-and-process 80 24 term-key-listener))
         KeyEvent/VK_Q (close-jframe (SwingUtilities/getWindowAncestor term-widget))
         nil))))
 
@@ -186,7 +120,7 @@
   (BasicConfigurator/configure)
   (.setLevel (Logger/getRootLogger) (Level/INFO))
   (configure-logger!)
-  (.put (UIManager/getDefaults) "SplitPane.border", (BorderFactory/createEmptyBorder))
+  ;(.put (UIManager/getDefaults) "SplitPane.border", (BorderFactory/createEmptyBorder))
   (UIManager/put "SplitDivider.background", (Color. 6 26 39))
   (UIManager/put "SplitDivider.foreground", (Color. 96 109 117))
   ;(UIManager/setLookAndFeel (UIManager/getSystemLookAndFeelClassName))

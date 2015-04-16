@@ -9,11 +9,7 @@ import (
 	"reflect"
 )
 
-const (
-	CONN_HOST = "localhost"
-	CONN_PORT = "3333"
-	CONN_TYPE = "tcp"
-)
+var sockPath = "/tmp/mm.sock"
 
 func processInputMessage(msg *goavro.Record, pReg *ProcessRegistry, conn *Connection) {
 	messageType, err := msg.Get("messageType")
@@ -150,8 +146,8 @@ func main() {
 	LoadAllCodecs()
 
 	// Listen for incoming connections.
-	//listener, err := net.Listen(CONN_TYPE, CONN_HOST+":"+CONN_PORT)
-	listener, err := net.Listen("unix", "/tmp/mm.sock")
+	//listener, err := net.Listen("tcp", "localhost:3333")
+	listener, err := net.Listen("unix", sockPath)
 	if err != nil {
 		fmt.Println("Error listening:", err.Error())
 		os.Exit(1)
@@ -164,7 +160,7 @@ func main() {
 	go inputMessagesWorker(procRegistry, connRegistry)
 	go outputMessagesWorker(procRegistry, connRegistry)
 
-	fmt.Println("Listening on " + CONN_HOST + ":" + CONN_PORT)
+	fmt.Println("Listening on " + sockPath)
 	for {
 		conn, err := NewConnection(listener)
 		if err != nil {

@@ -1,10 +1,12 @@
 (ns multimux.terminal
   (:require [clojure.core.async :refer [>!! <!! chan] :as async])
-  (:import [java.nio.charset Charset]
+  (:import JMultimuxSplit
+           [java.nio.charset Charset]
            [java.io InputStreamReader StringReader]
            [clojure.core.async.impl.channels ManyToManyChannel]
            [java.awt Font]
            [java.awt.image BufferedImage]
+           [javax.swing JPanel JSplitPane]
            [com.jediterm.terminal TerminalMode TerminalColor TextStyle]
            [com.jediterm.terminal.ui JediTermWidget TerminalPanel$TerminalKeyHandler]
            [com.jediterm.terminal.ui.settings DefaultSettingsProvider]))
@@ -101,63 +103,67 @@
         metrics (.getFontMetrics graphics font)]
     [(.charWidth metrics \W) (+ (.getHeight metrics) (* linespace 2))]))
 
-;; Directly connects a tty to a socket, not used
-(defn tty-socket-connector [socket charset]
-  (when (not socket)
-    (throw (Exception. "Socket is null")))
-  (let [inputStream (.getInputStream socket)
-        outputStream (.getOutputStream socket)
-        inputReader (InputStreamReader. inputStream charset) ]
-    (proxy [com.jediterm.terminal.TtyConnector] []
-      (init [q]
-        (println 'init socket)
-        (when socket
-          (.isConnected socket)))
-      (isConnected []
-        (println 'conn)
-        (when socket
-          (.isConnected socket)))
-      (resize [term-size pixel-size]
-        (println "Resize to" (.width term-size) (.height term-size)
-                 (.width pixel-size) (.height pixel-size)))
-      (read [buf offset length]
-        (println 'read buf offset length)
-        (.read inputReader buf offset length))
-      (write [buf]
-        (println 'write buf (count buf))
-        (cond
-          (byte-array? buf) (.write outputStream buf)
-          (string? buf) (.write outputStream (.getBytes buf charset)))
-        (.flush outputStream))
-      (getName []
-        "socketTty")
-      (close []
-        (.close socket))
-      (waitFor [] 1))))
+(defn split-panel [direction panel old-term-widget new-term-widget]
+  (let [orientation (if (= direction :vertical)
+                      JSplitPane/HORIZONTAL_SPLIT
+                      JSplitPane/VERTICAL_SPLIT)
+        [w h] (get-font-size)
+        split (JMultimuxSplit. orientation old-term-widget new-term-widget w h)]
+    (.remove panel old-term-widget)
+    (.add panel split)
+    (.setResizeWeight split 0.5)
+    (.revalidate panel)))
 
-;; (defn create-process []
-;;   (let [command (into-array String ["/bin/bash"])
-;;         env (into-array String ["TERM=xterm-256color"])
-;;         ;env (java.util.HashMap. (System/getenv))
-;;         ]
-;;     ;(PtyProcess/exec command env "/" false)
-;;     (PtyProcess/exec command env)))
+(defn split-splitpane [direction splitpane old-term-widget new-term-widget]
+  (let [orientation (if (= direction :vertical)
+                      JSplitPane/HORIZONTAL_SPLIT
+                      JSplitPane/VERTICAL_SPLIT)
+        [w h] (get-font-size)
+        new-split (JMultimuxSplit. orientation old-term-widget new-term-widget w h)]
+    (.remove splitpane old-term-widget)
+    (if (= (.getOrientation splitpane) JSplitPane/HORIZONTAL_SPLIT)
+      (if (.getLeftComponent splitpane)
+        (.setRightComponent splitpane new-split)
+        (.setLeftComponent splitpane new-split))
+      (if (.getTopComponent splitpane)
+        (.setBottomComponent splitpane new-split)
+        (.setTopComponent splitpane new-split)))
+    (.setResizeWeight new-split 0.5)))
 
-;; (defn tty-process-connector [process charset]
-;;   (proxy [com.jediterm.terminal.ProcessTtyConnector] [process charset]
-;;     (isConnected []
-;;       (.isRunning process))
-;;     (resizeImmediately []
-;;       (let [term-size (proxy-super getPendingTermSize)
-;;             pixel-size (proxy-super getPendingPixelSize)]
-;;         (when (and term-size pixel-size)
-;;           (println "Resize to" (.width term-size) (.height term-size))
-;;           (.setWinSize process (WinSize. (.width term-size) (.height term-size)
-;;                                          (.width pixel-size) (.height pixel-size))))))
-;;     ;(read [buf offset length]
-;;     ;  (println buf offset length)
-;;     ;  (let [n (proxy-super read buf offset length)]
-;;     ;    (println n)
-;;     ;    n))
-;;     (getName []
-;;       "processTty")))
+; (defn split [direction new-term]
+;   {:pre [(direction #{:vertical :horizontal})]}
+;   (if (not @frame)
+;     (log/warn "No frame, nothing to split")
+;     (let [term-panel (get-focused-term-panel @frame)
+;           term-widget (.getParent term-panel)
+;           container (.getParent term-widget)]
+;       (condp = (type container)
+;         javax.swing.JPanel (split-panel direction container term-widget new-term)
+;         javax.swing.JSplitPane (split-splitpane direction container term-widget new-term))
+;       (.requestFocus (.getTerminalPanel new-term)))))
+
+(defn split [term-widget direction new-terminal]
+  {:pre [(direction #{:vertical :horizontal})]}
+  (let [term-panel (.getTerminalPanel term-widget)
+        container (.getParent term-widget)]
+    (condp = (type container)
+      javax.swing.JPanel (split-panel direction container term-widget (:widget new-terminal))
+      ;javax.swing.JSplitPane (split-splitpane direction container term-widget (:widget new-terminal))
+      JMultimuxSplit (split-splitpane direction container term-widget (:widget new-terminal)))
+    (.requestFocus (.getTerminalPanel (:widget new-terminal))))
+  new-terminal)
+
+;; Term register
+(defrecord TermRegister [terminals followers])
+
+(defn create-term-register []
+  (->TermRegister {} {}))
+
+(defn add-term-to-register [register terminal]
+  (assoc-in register [:terminals (:keyboard terminal)] terminal))
+
+(defn register-follow-process [register terminal process-id]
+  (let [term (assoc terminal :process-id process-id)]
+   (-> register
+      (update-in [:followers process-id] #(if % (conj % term) #{term}))
+      (assoc-in [:terminals (:keyboard terminal)] term))))
