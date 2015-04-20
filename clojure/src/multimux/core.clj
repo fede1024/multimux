@@ -6,7 +6,7 @@
             [taoensso.timbre :as log]
             [clojure.string :as str]
             [clojure.core.async :refer [>!! <!! chan alts!!] :as async])
-  (:import [javax.swing UIManager JFrame JScrollBar SwingUtilities]
+  (:import [javax.swing UIManager BorderFactory JFrame JScrollBar SwingUtilities]
            [java.awt.event WindowListener KeyEvent KeyListener WindowEvent]
            [java.awt Color]
            [clojure.core.async.impl.channels ManyToManyChannel]
@@ -120,7 +120,7 @@
   (BasicConfigurator/configure)
   (.setLevel (Logger/getRootLogger) (Level/INFO))
   (configure-logger!)
-  ;(.put (UIManager/getDefaults) "SplitPane.border", (BorderFactory/createEmptyBorder))
+  (.put (UIManager/getDefaults) "SplitPane.border", (BorderFactory/createEmptyBorder))
   (UIManager/put "SplitDivider.background", (Color. 6 26 39))
   (UIManager/put "SplitDivider.foreground", (Color. 96 109 117))
   ;(UIManager/setLookAndFeel (UIManager/getSystemLookAndFeelClassName))
