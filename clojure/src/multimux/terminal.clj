@@ -27,8 +27,7 @@
   (let [input-stream (atom (StringReader. ""))]
     (reify com.jediterm.terminal.TtyConnector
       (init [this q]
-        (>!! (:keyboard terminal) [:initialize nil])
-        (when chan true))
+        (>!! (:keyboard terminal) [:initialize nil]) (when chan true))
       (isConnected [this]
         (when chan true))
       (resize [this term-size pixel-size]
@@ -152,6 +151,30 @@
       JMultimuxSplit (split-splitpane direction container term-widget (:widget new-terminal)))
     (.requestFocus (.getTerminalPanel (:widget new-terminal))))
   new-terminal)
+
+(defn destroy-in-split [split term-widget]
+  (.remove split term-widget)
+  (let [split-container (.getParent split)
+        other-term (or (.getLeftComponent split) (.getRightComponent split)
+                       (.getTopComponent split) (.getBottomComponent split))]
+    (println (type other-term) (type split-container))
+    (condp = (type split-container)
+      javax.swing.JPanel (do (.remove split-container split)
+                             (.add split-container other-term))
+      JMultimuxSplit (if (= (.getOrientation split-container) JSplitPane/HORIZONTAL_SPLIT)
+                       (if (.getLeftComponent split-container)
+                         (.setRightComponent split-container other-term)
+                         (.setLeftComponent split-container other-term))
+                       (if (.getTopComponent split-container)
+                         (.setBottomComponent split-container other-term)
+                         (.setTopComponent split-container other-term))))
+    (.revalidate split-container)))
+
+(defn destroy [term-widget]
+  (let [container (.getParent term-widget)]
+    (condp = (type container)
+      javax.swing.JPanel (println "This should close the window")
+      JMultimuxSplit (destroy-in-split container term-widget))))
 
 ;; Term register
 (defrecord TermRegister [terminals followers])

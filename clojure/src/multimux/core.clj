@@ -96,6 +96,7 @@
         KeyEvent/VK_H (term/split term-widget :horizontal (create-terminal-and-process 80 24 term-key-listener))
         KeyEvent/VK_V (term/split term-widget :vertical (create-terminal-and-process 80 24 term-key-listener))
         KeyEvent/VK_Q (close-jframe (SwingUtilities/getWindowAncestor term-widget))
+        KeyEvent/VK_D (do (term/destroy term-widget) true)
         nil))))
 
 (defn create-and-show-frame [title on-close]
@@ -128,6 +129,7 @@
     (log/error "Missing password")
     (if-let [;connection (conn/open (conn/create-socket-connection "localhost" 3333))
              connection (conn/open (conn/create-ssh-unix-connection "fede" (System/getenv "TEST_PWD") "localhost"))]
+      ;; TODO: protocol connection check, echo?
       (let [msg-read-chan (chan 100)
             msg-write-chan (chan 100)]
         (create-and-show-frame "Multimux" #(when connection (conn/close connection)))
