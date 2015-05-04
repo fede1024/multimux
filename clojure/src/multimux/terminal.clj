@@ -1,5 +1,6 @@
 (ns multimux.terminal
-  (:require [clojure.core.async :refer [>!! <!! chan] :as async])
+  (:require [clojure.core.async :refer [>!! <!! chan] :as async]
+            [taoensso.timbre :as log])
   (:import JMultimuxSplit
            [java.nio.charset Charset]
            [java.io InputStreamReader StringReader]
@@ -152,12 +153,18 @@
     (.requestFocus (.getTerminalPanel (:widget new-terminal))))
   new-terminal)
 
+(defn give-focus-to-term [component]
+  (condp = (type component)
+    JediTermWidget (.requestFocus (.getTerminalPanel component))
+    JMultimuxSplit (give-focus-to-term (or (.getLeftComponent component) (.getTopComponent component)))
+    (log/warn "I don't know how to give focus to a" (type component))))
+
 (defn destroy-in-split [split term-widget]
   (.remove split term-widget)
   (let [split-container (.getParent split)
         other-term (or (.getLeftComponent split) (.getRightComponent split)
                        (.getTopComponent split) (.getBottomComponent split))]
-    (println (type other-term) (type split-container))
+    (.remove split-container split)
     (condp = (type split-container)
       javax.swing.JPanel (do (.remove split-container split)
                              (.add split-container other-term))
@@ -168,13 +175,14 @@
                        (if (.getTopComponent split-container)
                          (.setBottomComponent split-container other-term)
                          (.setTopComponent split-container other-term))))
-    (.revalidate split-container)))
+    (.revalidate split-container)
+    (give-focus-to-term other-term)))
 
 (defn destroy [term-widget]
   (let [container (.getParent term-widget)]
     (condp = (type container)
-      javax.swing.JPanel (println "This should close the window")
-      JMultimuxSplit (destroy-in-split container term-widget))))
+      javax.swing.JPanel false
+      JMultimuxSplit (do (destroy-in-split container term-widget) true))))
 
 ;; Term register
 (defrecord TermRegister [terminals followers])

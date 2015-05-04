@@ -90,13 +90,16 @@
     terminal))
 
 (defn term-key-listener [term-widget event]
-  (let [keyCode (.getKeyCode event)]
+  (let [keyCode (.getKeyCode event)
+        close-frame-for-widget #(close-jframe (SwingUtilities/getWindowAncestor term-widget))]
     (when (.isAltDown event)
       (condp = keyCode
         KeyEvent/VK_H (term/split term-widget :horizontal (create-terminal-and-process 80 24 term-key-listener))
         KeyEvent/VK_V (term/split term-widget :vertical (create-terminal-and-process 80 24 term-key-listener))
-        KeyEvent/VK_Q (close-jframe (SwingUtilities/getWindowAncestor term-widget))
-        KeyEvent/VK_D (do (term/destroy term-widget) true)
+        KeyEvent/VK_Q (close-frame-for-widget)
+        KeyEvent/VK_D (do (when (not (term/destroy term-widget))
+                            (close-frame-for-widget))
+                          true)
         nil))))
 
 (defn create-and-show-frame [title on-close]
