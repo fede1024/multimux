@@ -91,9 +91,13 @@
         (.start (.getTerminalStarter term-widget))))
     terminal))
 
-(defn get-term-size [terminal]
-  (let [panel (.getTerminalPanel (:widget terminal))]
+(defn get-size [term-widget]
+  (let [panel (.getTerminalPanel (:widget term-widget))]
     [(.getColumnCount panel) (.getRowCount panel) (.getPixelWidth panel) (.getPixelHeight panel)]))
+
+(defn get-cursor-position [term-widget]
+  (let [term (.getTerminal term-widget)]
+    [(.getCursorX term) (.getCursorY term)]))
 
 (defn get-font-size []
   (let [settings (settings-provider)

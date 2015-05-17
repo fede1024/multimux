@@ -49,7 +49,7 @@
                       :initialize (log/error "Terminal is already initialized"))]
         (when message (>!! msg-write-handler message)))
       (if (= input-type :initialize)
-        (>!! msg-write-handler (apply ser/create-create-process-message (term/get-term-size term)))
+        (>!! msg-write-handler (apply ser/create-create-process-message (term/get-size term)))
         (log/warn "No process id associated to message" input-type)))))
 
 (defn message-handler [msg-read-chan msg-write-chan term-register]
@@ -79,7 +79,7 @@
 ;       (log/info "Terminal resized" width height cursorY))))
 
 
-(def ^:dynamic *term-register* (ref (term/create-term-register)))
+(def ^:dynamic *term-register* (ref nil))
 
 (defn close-jframe [frame]
   (.dispatchEvent frame (WindowEvent. frame WindowEvent/WINDOW_CLOSING)))
@@ -91,16 +91,100 @@
 
 (defn term-key-listener [term-widget event]
   (let [keyCode (.getKeyCode event)
-        close-frame-for-widget #(close-jframe (SwingUtilities/getWindowAncestor term-widget))]
+        close-frame-for-widget #(close-jframe (SwingUtilities/getWindowAncestor term-widget))
+        switch-term #(let [term (find-terminal @*term-register* term-widget %)]
+                        (when term (.requestFocus (.getTerminalPanel (:widget term))))
+                        true)]
     (when (.isAltDown event)
       (condp = keyCode
-        KeyEvent/VK_H (term/split term-widget :horizontal (create-terminal-and-process 80 24 term-key-listener))
+        KeyEvent/VK_S (term/split term-widget :horizontal (create-terminal-and-process 80 24 term-key-listener))
         KeyEvent/VK_V (term/split term-widget :vertical (create-terminal-and-process 80 24 term-key-listener))
         KeyEvent/VK_Q (close-frame-for-widget)
         KeyEvent/VK_D (do (when (not (term/destroy term-widget))
                             (close-frame-for-widget))
                           true)
+        KeyEvent/VK_H (switch-term :left)
+        KeyEvent/VK_L (switch-term :right)
+        KeyEvent/VK_K (switch-term :up)
+        KeyEvent/VK_J (switch-term :down)
         nil))))
+
+(defn get-component-win-coordinates
+  "Returns the 4 coordinates of a component relative to the window"
+  ([component]
+   (get-component-win-coordinates component (SwingUtilities/getWindowAncestor component)))
+  ([component window]
+   (let [xy (SwingUtilities/convertPoint component 0 0 window)
+         x (.x xy) y (.y xy)]
+     [x y (+ x (.getWidth component)) (+ y (.getHeight component))])))
+
+(defn get-term-win-coordinates-with-borders [term]
+  (let [[width height] (term/get-font-size)]
+    (map (fn [[term [x y xe ye]]]
+           [term [x y (+ xe width) (+ ye height)]]))))
+
+(defn get-cursor-win-coordinater [term-widget]
+  (let [[width height] (term/get-font-size)
+        [c r] (term/get-cursor-position term-widget)
+        window (SwingUtilities/getWindowAncestor term-widget)
+        xy (SwingUtilities/convertPoint term-widget (* c width) (* r height) window)
+        x (.x xy) y (.y xy)]
+     [x y]))
+
+(defn get-terminal-coordinates [register]
+  (let [[width height] (term/get-font-size)]
+    (map (fn [term]
+           (let [[x y xe ye] (get-component-win-coordinates (:widget term))]
+             ;;[term [x y (+ xe width) (+ ye width)]]
+             [term [x y xe ye]]))
+         (vals (:terminals register)))))
+
+(defmulti find-terminal
+  "Given a current term-widget, the terminal registry and a direction, finds the closest terminal
+  in that direction"
+  (fn [register term-widget direction] direction))
+
+(defmethod find-terminal :left [register term-widget _]
+  (let [[cx cy] (get-cursor-win-coordinater term-widget)
+        coords (get-terminal-coordinates register)]
+    (first
+      (last   ;; The closest one
+        (sort-by (fn [[term [x y xe ye]]] x)
+               (filter (fn [[term [x y xe ye]]]
+                         (println cy y ye)
+                         (and (< xe cx) (<= y cy) (>= ye cy)))
+                       coords))))))
+
+(defmethod find-terminal :right [register term-widget _]
+  (let [[cx cy] (get-cursor-win-coordinater term-widget)
+        coords (get-terminal-coordinates register)]
+    (first
+      (first  ;; The closest one
+        (sort-by (fn [[term [x y xe ye]]] x)
+               (filter (fn [[term [x y xe ye]]]
+                         (println cy y ye)
+                         (and (> x cx) (<= y cy) (>= ye cy)))
+                       coords))))))
+
+(defmethod find-terminal :up [register term-widget _]
+  (let [[cx cy] (get-cursor-win-coordinater term-widget)
+        coords (get-terminal-coordinates register)]
+    (first
+      (last   ;; The closest one
+        (sort-by (fn [[term [x y xe ye]]] y)
+                 (filter (fn [[term [x y xe ye]]]
+                           (and (< ye cy) (<= x cx) (>= xe cx)))
+                         coords))))))
+
+(defmethod find-terminal :down [register term-widget _]
+  (let [[cx cy] (get-cursor-win-coordinater term-widget)
+        coords (get-terminal-coordinates register)]
+    (first
+      (first  ;; The closest one
+        (sort-by (fn [[term [x y xe ye]]] y)
+               (filter (fn [[term [x y xe ye]]]
+                         (and (> y cy) (<= x cx) (>= xe cx)))
+                       coords))))))
 
 (defn create-and-show-frame [title on-close]
   (let [newFrame (JFrame. title)
@@ -135,6 +219,7 @@
       ;; TODO: protocol connection check, echo?
       (let [msg-read-chan (chan 100)
             msg-write-chan (chan 100)]
+        (dosync (ref-set *term-register* (term/create-term-register)))
         (create-and-show-frame "Multimux" #(when connection (conn/close connection)))
         (log/info "GUI started")
         (ser/message-to-connection-worker connection msg-read-chan msg-write-chan)
