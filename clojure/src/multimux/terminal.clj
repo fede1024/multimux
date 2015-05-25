@@ -194,11 +194,20 @@
 (defn create-term-register []
   (->TermRegister {} {}))
 
-(defn add-term-to-register [register terminal]
+(defn add-to-register [register terminal]
   (assoc-in register [:terminals (:keyboard terminal)] terminal))
+
+(defn remove-from-register [register terminal]
+  (update-in register [:terminals] dissoc (:keyboard terminal)))
 
 (defn register-follow-process [register terminal process-id]
   (let [term (assoc terminal :process-id process-id)]
    (-> register
       (update-in [:followers process-id] #(if % (conj % term) #{term}))
       (assoc-in [:terminals (:keyboard terminal)] term))))
+
+(defn widget-to-term
+  "Performs a linear search in the tem register and return the terminal associated with
+  the terminal panel"
+  [register widget]
+  (first (filter #(= (:widget %) widget) (vals (:terminals register)))))

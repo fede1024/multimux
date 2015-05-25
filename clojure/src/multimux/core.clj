@@ -89,26 +89,6 @@
     (dosync (alter *term-register* term/add-term-to-register terminal))
     terminal))
 
-(defn term-key-listener [term-widget event]
-  (let [keyCode (.getKeyCode event)
-        close-frame-for-widget #(close-jframe (SwingUtilities/getWindowAncestor term-widget))
-        switch-term #(let [term (find-terminal @*term-register* term-widget %)]
-                        (when term (.requestFocus (.getTerminalPanel (:widget term))))
-                        true)]
-    (when (.isAltDown event)
-      (condp = keyCode
-        KeyEvent/VK_S (term/split term-widget :horizontal (create-terminal-and-process 80 24 term-key-listener))
-        KeyEvent/VK_V (term/split term-widget :vertical (create-terminal-and-process 80 24 term-key-listener))
-        KeyEvent/VK_Q (close-frame-for-widget)
-        KeyEvent/VK_D (do (when (not (term/destroy term-widget))
-                            (close-frame-for-widget))
-                          true)
-        KeyEvent/VK_H (switch-term :left)
-        KeyEvent/VK_L (switch-term :right)
-        KeyEvent/VK_K (switch-term :up)
-        KeyEvent/VK_J (switch-term :down)
-        nil))))
-
 (defn get-component-win-coordinates
   "Returns the 4 coordinates of a component relative to the window"
   ([component]
@@ -151,7 +131,6 @@
       (last   ;; The closest one
         (sort-by (fn [[term [x y xe ye]]] x)
                (filter (fn [[term [x y xe ye]]]
-                         (println cy y ye)
                          (and (< xe cx) (<= y cy) (>= ye cy)))
                        coords))))))
 
@@ -162,7 +141,6 @@
       (first  ;; The closest one
         (sort-by (fn [[term [x y xe ye]]] x)
                (filter (fn [[term [x y xe ye]]]
-                         (println cy y ye)
                          (and (> x cx) (<= y cy) (>= ye cy)))
                        coords))))))
 
@@ -185,6 +163,29 @@
                (filter (fn [[term [x y xe ye]]]
                          (and (> y cy) (<= x cx) (>= xe cx)))
                        coords))))))
+
+(defn term-key-listener [term-widget event]
+  (let [keyCode (.getKeyCode event)
+        close-frame-for-widget #(close-jframe (SwingUtilities/getWindowAncestor term-widget))
+        switch-term #(let [term (find-terminal @*term-register* term-widget %)]
+                       (when term (.requestFocus (.getTerminalPanel (:widget term))))
+                       true)]
+    (when (.isAltDown event)
+      (condp = keyCode
+        KeyEvent/VK_S (term/split term-widget :horizontal (create-terminal-and-process 80 24 term-key-listener))
+        KeyEvent/VK_V (term/split term-widget :vertical (create-terminal-and-process 80 24 term-key-listener))
+        KeyEvent/VK_Q (close-frame-for-widget)
+        KeyEvent/VK_D (do (when (not (term/destroy term-widget))
+                            (close-frame-for-widget))
+                          ;(term/remove-term-from-register register term-widget)
+                          (dosync (alter *term-register* term/remove-term-from-register
+                                         (term/widget-to-term @*term-register* term-widget)))
+                          true)
+        KeyEvent/VK_H (switch-term :left)
+        KeyEvent/VK_L (switch-term :right)
+        KeyEvent/VK_K (switch-term :up)
+        KeyEvent/VK_J (switch-term :down)
+        nil))))
 
 (defn create-and-show-frame [title on-close]
   (let [newFrame (JFrame. title)
