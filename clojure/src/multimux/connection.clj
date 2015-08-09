@@ -57,18 +57,19 @@
   (let [session (.getSession jsch username host)
         known-host-repository (.getHostKeyRepository session)]
     (when host-key
+      (log/warn "Adding ssh host key for" (.getHost session))
       (.add known-host-repository host-key user-info))
     (.setPassword session password)
     (try
       (.connect session 20000)
       session
       (catch JSchException e
-        (if-let [cause (.getCause e)]
-          (throw cause)
-          (when (and (.startsWith (.getMessage e) "UnknownHostKey") (not host-key) (not user-info))
-            (log/warn "Adding ssh host key for" (.getHost session))
-            (create-ssh-session username password host :host-key (.getHostKey session)
-                                :user-info (.getUserInfo session))))))))
+        (if (and (.startsWith (.getMessage e) "UnknownHostKey") (not host-key) (not user-info))
+          (create-ssh-session username password host :host-key (.getHostKey session)
+                              :user-info (.getUserInfo session))
+          (if-let [cause (.getCause e)]
+            (throw cause)
+            (throw e)))))))
 
 (defn ssh-exec-channel [session command]
   (let [channel (.openChannel session "exec")

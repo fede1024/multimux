@@ -86,7 +86,7 @@
 
 (defn create-terminal-and-process [columns rows key-listener]
   (let [terminal (term/create-term columns rows key-listener)]
-    (dosync (alter *term-register* term/add-term-to-register terminal))
+    (dosync (alter *term-register* term/add-to-register terminal))
     terminal))
 
 (defn get-component-win-coordinates
@@ -178,7 +178,7 @@
         KeyEvent/VK_D (do (when (not (term/destroy term-widget))
                             (close-frame-for-widget))
                           ;(term/remove-term-from-register register term-widget)
-                          (dosync (alter *term-register* term/remove-term-from-register
+                          (dosync (alter *term-register* term/remove-from-register
                                          (term/widget-to-term @*term-register* term-widget)))
                           true)
         KeyEvent/VK_H (switch-term :left)

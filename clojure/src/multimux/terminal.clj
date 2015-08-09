@@ -188,6 +188,7 @@
       javax.swing.JPanel false
       JMultimuxSplit (do (destroy-in-split container term-widget) true))))
 
+
 ;; Term register
 (defrecord TermRegister [terminals followers])
 
