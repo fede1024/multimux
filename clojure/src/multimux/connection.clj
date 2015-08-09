@@ -67,9 +67,7 @@
         (if (and (.startsWith (.getMessage e) "UnknownHostKey") (not host-key) (not user-info))
           (create-ssh-session username password host :host-key (.getHostKey session)
                               :user-info (.getUserInfo session))
-          (if-let [cause (.getCause e)]
-            (throw cause)
-            (throw e)))))))
+          (log/error e))))))
 
 (defn ssh-exec-channel [session command]
   (let [channel (.openChannel session "exec")
@@ -90,10 +88,10 @@
   (->SSHUnixConnection username password host nil nil nil nil nil))
 
 (defn open-ssh-unix-connection [conn]
-  (let [session (create-ssh-session (:username conn) (:password conn) (:host conn))
-        [channel input output error] (ssh-exec-channel session socat-command)]
-    ;; TODO: add protocol message to check for connection
-    (assoc conn :session session :channel channel :input-stream input :output-stream output :error-stream error)))
+  (if-let [session (create-ssh-session (:username conn) (:password conn) (:host conn))]
+    (let [[channel input output error] (ssh-exec-channel session socat-command)]
+      ;; TODO: add protocol message to check for connection
+      (assoc conn :session session :channel channel :input-stream input :output-stream output :error-stream error))))
 
 (defn close-ssh-unix-connection [conn]
   (.disconnect (:channel conn))
