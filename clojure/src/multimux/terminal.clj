@@ -80,8 +80,8 @@
                        (proxy-super keyPressed event))))]
     (.setTtyConnector term-widget connector)
     (.setModeEnabled (.getTerminal term-widget) (TerminalMode/CursorBlinking) false)
-    (.setModeEnabled (.getTerminal term-widget) (TerminalMode/AutoWrap) true)
-    (.setVisible (get-scrollbar term-widget) false)
+    (.setModeEnabled (.getTerminal term-widget) (TerminalMode/AutoWrap) true) ;; Do not disable
+    ;;(.setVisible (get-scrollbar term-widget) false)
     ;(.start term-widget)
     ;; substitutes JediTermWidget.start() to use setKeyListener
     (async/thread

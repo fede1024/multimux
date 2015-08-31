@@ -10,7 +10,7 @@
                  [com.jcraft/jsch "0.1.52"]
                  [log4j "1.2.16"]
                  [com.google.guava/guava "14.0.1"]]
-  :resource-paths  ["lib/jediterm-pty-2.0.jar" "lib/guava-14.0.1.jar"]
+  :resource-paths  ["lib/jediterm-pty-2.0-patch.jar" "lib/guava-14.0.1.jar"]
   :java-source-paths ["src/java/"]
   :jvm-opts ["-Dsun.java2d.pmoffscreen=false"]
   :main ^:skip-aot multimux.core

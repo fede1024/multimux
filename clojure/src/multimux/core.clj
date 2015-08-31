@@ -33,6 +33,7 @@
 (defn incoming-message-handler [message chan term-register]
   (condp = (:message-type message)
     :stdout (doseq [term (get-in @term-register [:followers (:process-id message)])]
+              ;;(println (clojure.string/replace (String. (:bytes message)) "\u001b" "^["))
               (>!! (:screen term) (:bytes message)))
     :createProcess (let [term (first (filter #(= (:process-id %) -1) (vals (:terminals @term-register))))]
                      (if term
@@ -52,12 +53,22 @@
         (>!! msg-write-handler (apply ser/create-create-process-message (term/get-size term)))
         (log/warn "No process id associated to message" input-type)))))
 
-(defn message-handler [msg-read-chan msg-write-chan term-register]
+(defn message-handler-old [msg-read-chan msg-write-chan term-register]
   (async/thread
     (loop []
       (let [[data chan] (alts!! (conj (keys (:terminals @term-register)) msg-read-chan))]
         (if (= chan msg-read-chan)
           (incoming-message-handler (ser/decode-message data) chan term-register)
+          (term-write-handler data chan term-register msg-write-chan)))
+      (recur))))
+
+(defn message-handler [msg-read-chan msg-write-chan term-register]
+  (async/thread
+    (loop []
+      (let [[data chan] (alts!! (conj (keys (:terminals @term-register)) msg-read-chan))]
+        (if (= chan msg-read-chan)
+          ;;(incoming-message-handler (ser/decode-message data) chan term-register)
+          (println ">> " data)
           (term-write-handler data chan term-register msg-write-chan)))
       (recur))))
 
@@ -216,7 +227,7 @@
   (if (not (System/getenv "TEST_PWD"))
     (log/error "Missing password")
     (if-let [;connection (conn/open (conn/create-socket-connection "localhost" 3333))
-             connection (conn/open (conn/create-ssh-unix-connection "fede" (System/getenv "TEST_PWD") "localhost"))]
+             connection (conn/open (conn/create-ssh-connection "fede" (System/getenv "TEST_PWD") "localhost" "bash"))]
       ;; TODO: protocol connection check, echo?
       (let [msg-read-chan (chan 100)
             msg-write-chan (chan 100)]
@@ -226,3 +237,59 @@
         (ser/message-to-connection-worker connection msg-read-chan msg-write-chan)
         (message-handler msg-read-chan msg-write-chan *term-register*))
       (log/error "Connection not established"))))
+
+(defn create-and-show-frame [title terminal on-close]
+  (let [newFrame (JFrame. title)]
+    (doto newFrame
+      (.add (:widget terminal))
+      ;(.setDefaultCloseOperation JFrame/EXIT_ON_CLOSE)
+      (.addWindowListener
+        (proxy [WindowListener]  []
+          (windowOpened [evt])
+          (windowActivated [evt])
+          (windowDeactivated [evt])
+          (windowClosing [evt]
+            (on-close)
+            (log/info "GUI closed"))))
+      (.setSize 1000 800)
+      (.pack)
+      (.setVisible true))))
+
+(defn -main [& args]
+  (BasicConfigurator/configure)
+  (.setLevel (Logger/getRootLogger) (Level/INFO))
+  (configure-logger!)
+  (.put (UIManager/getDefaults) "SplitPane.border", (BorderFactory/createEmptyBorder))
+  (UIManager/put "SplitDivider.background", (Color. 6 26 39))
+  (UIManager/put "SplitDivider.foreground", (Color. 96 109 117))
+  ;(UIManager/setLookAndFeel (UIManager/getSystemLookAndFeelClassName))
+  (if (not (System/getenv "TEST_PWD"))
+    (log/error "Missing password")
+    (if-let [;connection (conn/open (conn/create-socket-connection "localhost" 3333))
+             connection (conn/open (conn/create-ssh-connection "fede" (System/getenv "TEST_PWD") "localhost" "bash --login"))]
+      ;; TODO: protocol connection check, echo?
+      (let [terminal (term/create-term 80 25 term-key-listener)]
+        (create-and-show-frame "Multimux" terminal #(when connection (conn/close connection)))
+        (log/info "GUI started")
+        ;(ser/message-to-connection-worker connection msg-read-chan msg-write-chan)
+        ;(message-handler msg-read-chan msg-write-chan *term-register*)
+        (async/thread
+          (loop [data (<!! (:stdout connection))]
+            (when (and (not (nil? data))
+                       (>!! (:screen terminal) data))
+              (recur (<!! (:stdout connection)))))
+          (log/info "Terminating message handler out"))
+        (async/thread
+          (loop [[input-type data] (<!! (:keyboard terminal))]
+            (let [result (condp = input-type
+                           :input (>!! (:stdin connection) data)
+                           :resize (.setPtySize (:jsch-channel connection) (first data) (second data) (nth data 2) (nth data 3))
+                           :initialize (log/info "Initialize"))]
+              (recur (<!! (:keyboard terminal)))))))
+      (log/error "Connection not established"))))
+
+(def kb (:keyboard  (first  (vals  (:terminals @*term-register*)))))
+(def screen (:screen  (first  (vals  (:terminals @*term-register*)))))
+
+(defn send-screen [input]
+  (>!! screen  (.getBytes  (clojure.string/replace input "^[" "\u001b"))))
